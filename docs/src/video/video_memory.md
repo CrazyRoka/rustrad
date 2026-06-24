@@ -9,7 +9,9 @@ The screen memory is divided into character-sized cells. Each character row cons
 
 The physical RAM address of a pixel scanline is derived from the base address of the character row, calculated as:
 
-$$\text{Scanline Address} = \text{Base Row Address} + (S \times \&0800)$$
++```text
++Scanline Address = Base Row Address + (S * &0800)
++```
 
 Where $S$ represents the scanline index ($0 \le S \le 7$).
 

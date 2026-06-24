@@ -8,19 +8,19 @@ The Gate Array maintains a internal **6-bit counter** which increment on every H
 * **Assertion Duration:** `/INT` remains active until the Z80 acknowledges the interrupt.
 
 #### Z80 Acknowledge Sense (`/IORQ` + `/M1`)
-The Gate Array monitors the Z80 control bus for an Interrupt Acknowledge cycle (asserted by Z80 as $\overline{\text{IORQ}} = 0$ and $\overline{\text{M1}} = 0$).
+The Gate Array monitors the Z80 control bus for an Interrupt Acknowledge cycle (asserted by Z80 as `/IORQ = 0` and `/M1 = 0`).
 * **Acknowledge Behavior:** 
   1. The interrupt request line (`/INT`) is cleared to high.
   2. The highest bit of the 6-bit counter (Bit 5) is cleared to `0`. 
   3. This limits the counter to a maximum range of 31, preventing a subsequent interrupt from occurring for at least **32 HSYNCs**.
 
 #### Software Clear Command
-If the CPU performs a write to the Gate Array "Select screen mode and rom configuration" register (gated by command bits $7..6 = \text{`10`}$) and sets **Bit 4 to 1**, the active interrupt request is immediately cleared and the 6-bit counter is reset to `0`.
++If the CPU performs a write to the Gate Array "Select screen mode and rom configuration" register (gated by command bits `7..6 = 10`) and sets **Bit 4 to 1**, the active interrupt request is immediately cleared and the 6-bit counter is reset to `0`.
 
 #### VSYNC Synchronization
 The Gate Array monitors the CRTC's VSYNC signal. After exactly **2 HSYNC transitions** have been registered following the rising edge of VSYNC, the Gate Array executes one of two operations:
-* **Case A (Counter $\ge 32$):** If Bit 5 of the counter is `1`, the counter is reset to `0`, and no interrupt is requested.
-* **Case B (Counter $< 32$):** If Bit 5 of the counter is `0`, the counter is reset to `0`, and a new interrupt request is immediately generated.
+* **Case A (Counter >= 32):** If Bit 5 of the counter is `1`, the counter is reset to `0`, and no interrupt is requested.
+* **Case B (Counter < 32):** If Bit 5 of the counter is `0`, the counter is reset to `0`, and a new interrupt request is immediately generated.
 
 This synchronization aligns subsequent interrupt steps to the vertical retrace phase.
 

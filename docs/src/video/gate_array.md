@@ -4,7 +4,9 @@ The custom Amstrad Gate Array coordinates video generation, ROM paging, and colo
 
 #### I/O Port Addressing
 The Gate Array is selected when address bits 15 and 14 are configured as:
-$$\text{Address } A15 = 0, \quad A14 = 1$$
+```text
+Address A15 = 0, A14 = 1
+```
 
 Writing to any port matching this mask targets the Gate Array. The standard, collision-free register port is `&7Fxx`. The Gate Array is **write-only**.
 

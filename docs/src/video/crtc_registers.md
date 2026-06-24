@@ -10,7 +10,7 @@ The CRTC is selected when address bus line `A14` is driven low (`0`). Bits `A9` 
 
 | Address Bit 9 | Address Bit 8 | Port Address | Access Type | Function / Description |
 | :---: | :---: | :---: | :--- | :--- |
-| **0** | **0** | `&BCxx` | Write Only | **Register Select:** Write a register index ($0..31$) to the internal Address Register (AR). |
+| **0** | **0** | `&BCxx` | Write Only | **Register Select:** Write a register index (0 to 31) to the internal Address Register (AR). |
 | **0** | **1** | `&BDxx` | Write Only | **Register Data Write:** Write parameter byte to the currently selected register. |
 | **1** | **0** | `&BExx` | Read Only | **Status Register Read:** (Support varies by CRTC Type; see below). |
 | **1** | **1** | `&BFxx` | Read Only | **Register Data Read:** Read parameter byte from the currently selected register. |
@@ -132,9 +132,9 @@ Status Register (Type 1 Only):
 
 #### R3 - Horizontal & Vertical Sync Pulse Widths (Write Only*)
 Determines horizontal and vertical sync widths.
-* **Horizontal Sync Width (Bits [3..0]):** Programmed in units of character clock cycles ($1$ to $15$). A value of `0` disables the HSYNC output.
+* **Horizontal Sync Width (Bits [3..0]):** Programmed in units of character clock cycles (1 to 15). A value of `0` disables the HSYNC output.
 * **Vertical Sync Width (Bits [7..4]):** Width behavior is highly dependent on CRTC type:
-  * **Type 0 (HD6845S):** Programmable in units of scanlines ($1$ to $15$). Writing `0` sets the VSYNC width to 16 lines.
+  * **Type 0 (HD6845S):** Programmable in units of scanlines (1 to 15). Writing `0` sets the VSYNC width to 16 lines.
   * **Type 1 / 2 (UM6845R / MC6845):** This upper nibble is ignored. VSYNC is permanently fixed in the silicon at **16 scanlines**.
 
 #### R4 - Vertical Total (Write Only*)

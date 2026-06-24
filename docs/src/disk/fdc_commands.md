@@ -60,8 +60,8 @@ The µPD765A/B supports 15 operational instructions. Most commands require exact
 | **Read ID** | `0 MF 001010` | 2 | 7 | Returns the first valid Sector ID field encountered. |
 | **Format Track** | `0 MF 001101` | 6 | 7 | Synthesizes standard track format (Gaps, IDAM, DAM). |
 | **Scan Equal** | `MT MF SK 10001` | 9 | 7 | Byte-for-byte comparison of disk sectors vs. CPU-supplied stream. |
-| **Scan Low or Equal** | `MT MF SK 11001` | 9 | 7 | Byte-for-byte comparison (Disk $\le$ CPU). |
-| **Scan High or Equal**| `MT MF SK 11101` | 9 | 7 | Byte-for-byte comparison (Disk $\ge$ CPU). |
+| **Scan Low or Equal** | `MT MF SK 11001` | 9 | 7 | Byte-for-byte comparison (Disk <= CPU). |
+| **Scan High or Equal**| `MT MF SK 11101` | 9 | 7 | Byte-for-byte comparison (Disk >= CPU). |
 | **Recalibrate** | `00000111` | 2 | 0 | Retracts the drive head to Track 0. |
 | **Seek** | `00001111` | 3 | 0 | Moves drive head to a specified cylinder number (`NCN`). |
 | **Specify** | `00000011` | 3 | 0 | Configures internal timers (`SRT`, `HUT`, `HLT`, and `ND`). |

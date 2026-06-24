@@ -79,7 +79,8 @@ The PSG has 16 internal registers (Registers 0–15). Because the internal hardw
 ### Low-Level Register Specifications & Calculations
 
 #### 1. Tone Period Generators (Registers 0–5)
-Channels A, B, and C output analog square-wave tones. Each channel uses a fine-tune (8-bit) and coarse-tune (4-bit) register pair to form a 12-bit divisor value ($0$ to $4095$).
+Channels A, B, and C output analog square-wave tones. Each channel uses a fine-tune (8-bit) and coarse-tune (4-bit) register pair to form a 12-bit divisor value (0 to 4095).
+
 
 ```
 12-Bit Programmed Divisor:
@@ -98,7 +99,7 @@ Channels A, B, and C output analog square-wave tones. Each channel uses a fine-t
 * **Low Period Cutoff (Mute):** If the combined 12-bit divisor is set in the range **`0` to `4`**, the analog generation hardware fails to cycle and the channel falls silent.
 
 #### 2. Noise Period Generator (Register 6)
-An internal 5-bit register specifies the period divisor ($0$ to $31$) for a pseudo-random, frequency-modulated pulse-width square wave (white noise).
+An internal 5-bit register specifies the period divisor (0 to 31) for a pseudo-random, frequency-modulated pulse-width square wave (white noise).
 * **Calculation Formula:**
   ```rust
   Noise_Frequency_Hz = 1_000_000.0 / (16.0 * Programmed_Period as f64);
@@ -130,7 +131,7 @@ Bits [3..0]: Fixed volume value (used only if Bit 4 is 0)
 ```
 
 #### 5. Envelope Period Duration (Registers 11–12)
-Specifies the 16-bit frequency divisor ($0$ to $65535$) used to cycle the envelope generation steps.
+Specifies the 16-bit frequency divisor (0 to 65535) used to cycle the envelope generation steps.
 * **Calculation Formula:**
   ```rust
   Envelope_Period_Sec = 256.0 * Programmed_Value as f64 / 1_000_000.0;

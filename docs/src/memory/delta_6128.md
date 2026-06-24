@@ -19,13 +19,13 @@ The Amstrad CPC 6128 contains a second 64KB block of RAM (Bank 1), managed by a 
 ```
 
 * **I/O Trigger Condition:** The PAL registers a bank-switching configuration write when the following conditions are simultaneously met on the bus:
-  $$\text{Address } A15 = 0, \quad A14 = 1$$
-  $$\text{Data } D7 = 1, \quad D6 = 1$$
-  $$\text{Control } \overline{\text{IOWR}} = 0$$
+  * Address: `A15 = 0`, `A14 = 1`
+  * Data: `D7 = 1`, `D6 = 1`
+  * Control: `/IOWR = 0`
 * **Configuration Selection:** Bits `D2`, `D1`, and `D0` of the written byte determine the active memory configuration map.
 
 #### Memory Configurations Table (Selections 0–7)
-Memory is paged in 16KB sub-blocks (numbered $0..3$). Blocks with an asterisk (`*`) belong to the second 64KB bank (Bank 1).
+Memory is paged in 16KB sub-blocks (numbered `0..3`). Blocks with an asterisk (`*`) belong to the second 64KB bank (Bank 1).
 
 | Range | Selection 0 | Selection 1 | Selection 2 | Selection 3 | Selection 4 | Selection 5 | Selection 6 | Selection 7 |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -36,9 +36,9 @@ Memory is paged in 16KB sub-blocks (numbered $0..3$). Blocks with an asterisk (`
 
 #### Signal Truth Table
 
-During any memory access, the PAL maps physical Z80 addresses ($A15, A14$) to bank-specific `/CAS0` (Bank 0), `/CAS1` (Bank 1) selects, and translated addresses $A15OUT, A14OUT$.
+During any memory access, the PAL maps physical Z80 addresses (`A15`, `A14`) to bank-specific `/CAS0` (Bank 0), `/CAS1` (Bank 1) selects, and translated addresses `A15OUT`, `A14OUT`.
 
-| Selection | $D[2:0]$ | $A15$ | $A14$ | $/CAS1$ | $/CAS0$ | $A15OUT$ | $A14OUT$ | Mapped Block |
+| Selection | `D[2:0]` | `A15` | `A14` | `/CAS1` | `/CAS0` | `A15OUT` | `A14OUT` | Mapped Block |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **0** | `000` | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
 | | | 0 | 1 | 1 | 0 | 0 | 1 | 1 |
@@ -74,6 +74,6 @@ During any memory access, the PAL maps physical Z80 addresses ($A15, A14$) to ba
 | | | 1 | 1 | 1 | 0 | 1 | 1 | 3 |
 
 #### Functional Observations
-1. `/CAS1` and `/CAS0` are mutually exclusive ($/\text{CAS1} = \neg/\text{CAS0}$), gated by physical timing signal `NCAS`.
+1. `/CAS1` and `/CAS0` are mutually exclusive (`/CAS1 = NOT /CAS0`), gated by physical timing signal `NCAS`.
 2. Only ranges `&4000-&7FFF` (sub-block 1) and `&C000-&FFFF` (sub-block 3) are affected by PAL bank-switching selections, with the exception of Configuration 2 (which pages Bank 1 across the entire range).
-3. Under Selections 4, 5, 6, 7: If the CPU addresses the range `&4000-&7FFF` ($A15=0, A14=1$), the PAL outputs $A15OUT = D1$ and $A14OUT = D0$, routing the access directly to the block designated by the selection register bits.
+3. Under Selections 4, 5, 6, 7: If the CPU addresses the range `&4000-&7FFF` (`A15=0, A14=1`), the PAL outputs `A15OUT = D1` and `A14OUT = D0`, routing the access directly to the block designated by the selection register bits.

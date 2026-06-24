@@ -1,12 +1,12 @@
 ### Keyboard & Joystick Matrix
 
-The Amstrad CPC keyboard, alongside connected joysticks, is configured as a physical $10 \times 8$ switch matrix. Reading keystrokes requires coordinated control of both the Intel 8255 PPI and the AY-3-8912 PSG.
+The Amstrad CPC keyboard, alongside connected joysticks, is configured as a physical 10 x 8 switch matrix. Reading keystrokes requires coordinated control of both the Intel 8255 PPI and the AY-3-8912 PSG.
 
 ---
 
 ### Hardware Matrix Layout
 
-The matrix is structured as 10 selectable lines (columns $0..9$), with each line returning an 8-bit status byte (bits $0..7$). 
+The matrix is structured as 10 selectable lines (columns `0..9`), with each line returning an 8-bit status byte (bits `0..7`). 
 * **Logic States:** A bit value of `0` denotes a closed switch (key/button **pressed**). A bit value of `1` denotes an open switch (key/button **not pressed**).
 
 | Bit | Line 0 | Line 1 | Line 2 | Line 3 | Line 4 | Line 5 | Line 6 | Line 7 | Line 8 | Line 9 |
@@ -26,7 +26,7 @@ The matrix is structured as 10 selectable lines (columns $0..9$), with each line
 * **Joystick 1 Routing (Shared):** Joystick 1 (`J1`) directions and fire buttons are hardwired in parallel with the standard keyboard keys on Line 6 (Bits 0–5). Pressing these keyboard keys generates inputs identical to Joystick 1 movements.
 * **Joystick 0 Routing (Isolated):** Joystick 0 (`J0`) directions and fire buttons occupy their own dedicated column on Line 9 (Bits 0–5).
 * **Third Fire Button / Mouse Logic:** Bit 6 on Line 6 and Line 9 can optionally be used by software to read a third joystick fire button or the middle button of an AMX-compatible mouse.
-* **Lines 11–14 Return:** If an address selects any matrix line in the range $11..14$, the read buffer hardware must always return `&FF`.
+* **Lines 11–14 Return:** If an address selects any matrix line in the range 11 to 14, the read buffer hardware must always return `&FF`.
 <!-- TODO: Verify default return for Matrix Line 10 -->
 <!-- TODO: Verify default return for Matrix Line 15 -->
 
@@ -60,7 +60,7 @@ Because the matrix lines are connected to **PSG Port A (Register 14)** and selec
 3. **Change PPI Buffer Direction:**
    * Configure PPI Port A to **Input** mode by writing to the PPI Control Register (`&F7xx`).
 4. **Assert Column Line:**
-   * Write the target matrix line index ($0..15$) to the lower nibble of PPI Port C (Bits 3..0). This routes the selected physical column lines to the inputs of PSG Port A.
+   * Write the target matrix line index (0 to 15) to the lower nibble of PPI Port C (Bits 3..0). This routes the selected physical column lines to the inputs of PSG Port A.
 5. **Enable PSG Data Read:**
    * Set PPI Port C Bits 7–6 to `01` (Read Register function). This instructs the PSG to output the latched register data (Register 14 matrix line byte) back onto PPI Port A.
 6. **Capture Matrix Byte:**

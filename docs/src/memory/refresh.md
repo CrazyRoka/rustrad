@@ -3,7 +3,7 @@
 Dynamic RAM (DRAM) requires periodic row accesses to prevent data loss due to leakage currents in the internal microcondensers.
 
 #### Hardware Architecture (Base Model)
-The standard CPC uses 4-bit wide, 16k-bit depth DRAM ICs configured as a square matrix of $128 \times 128$ cells. There are 128 rows that must be refreshed within their maximum charge retention window (typically several milliseconds).
+The standard CPC uses 4-bit wide, 16k-bit depth DRAM ICs configured as a square matrix of 128 x 128 cells. There are 128 rows that must be refreshed within their maximum charge retention window (typically several milliseconds).
 
 #### Z80 Refresh (R) Register Role
 During the instruction decode phase (second half of an instruction fetch cycle `M1`), the Z80 places the 7-bit contents of its internal `R` register onto the lower 7 bits of the Address Bus (`A0`–`A6`) and asserts the `/RFSH` pin low.

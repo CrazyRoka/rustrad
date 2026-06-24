@@ -11,7 +11,7 @@ When an interrupt is acknowledged, the standard CPC-imposed synchronization dela
 Your emulator must adjust its instruction cycle timing during interrupt assertion if any of the following instructions are active:
 
 * **16-Bit Register Arithmetic:**
-  * `INC ss` / `DEC ss` (where `ss` $\in$ {`HL`, `BC`, `DE`, `SP`})
+  * `INC ss` / `DEC ss` (where `ss` is one of `HL`, `BC`, `DE`, `SP`)
   * `INC IX` / `DEC IX`
   * `INC IY` / `DEC IY`
 * **Conditional Control Flow:**
