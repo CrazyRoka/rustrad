@@ -48,3 +48,9 @@ $$\text{Pen Index for Pixel } 1 = (\text{Bit } 6 \times 1) + (\text{Bit } 2 \tim
 | $p0(0)$| $p1(0)$| $p0(2)$| $p1(2)$| $p0(1)$| $p1(1)$| $p0(3)$| $p1(3)$|
 
 ---
+
+#### Video Mode 3 (Unofficial Mode)
+When bits 1 and 0 of the Gate Array's Mode and ROM Configuration register (RMR) are set to `11`, the display enters **Mode 3**:
+
+* **Physical Characteristics:** Mode 3 displays at a horizontal resolution of 160 pixels (matching Mode 0 dimensions), but restricts the color selection to a maximum of **4 active pens** (limited to Pens 0–3).
+* **Emulator Note:** To emulate Mode 3 correctly, map pixel bits using the physical layout of Mode 0, but mask or ignore pen selections that fall outside the Pen 0–3 boundary.

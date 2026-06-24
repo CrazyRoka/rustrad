@@ -1,5 +1,7 @@
 ### Video Memory Mapping & Offsets
 
+Display generation relies on CRTC hardware counters to determine which RAM location to access for the active pixel stream.
+
 The default video memory is located in the upper 16KB of RAM, spanning `&C000` to `&FFFF`.
 
 #### Line Address Formula
@@ -32,4 +34,44 @@ Modifying the screen offset shifts all row address calculations. The calculation
 * **Lower Bound:** `&C000`
 * **Upper Bound:** `&FFFF`
 When horizontal or vertical scrolling causes the row calculation to exceed `&FFFF`, the pointer must wrap back to `&C000` within the active 16KB screen space.
+
+#### Display Start Address registers (CRTC R12 & R13)
+CRTC Registers 12 (High) and 13 (Low) form a 16-bit register pair that dictates the base address of the screen display buffer. 
+
+Your memory mapping logic must decode the bits of this register pair as follows:
+
+```
+        CRTC REGISTER 12 (High)             CRTC REGISTER 13 (Low)
+   15  14  13  12  11  10  09  08       07  06  05  04  03  02  01  00
+  +---+---+---+---+---+---+---+---+    +---+---+---+---+---+---+---+---+
+  | X | X | Page  |  Size |  Offset (High) |   Offset (Low)            |
+  +---+---+---+---+---+---+---+---+    +---+---+---+---+---+---+---+---+
+    |   |   |   |   |   |   \________________________________________/
+    |   |   |   |   |   |                        |
+    |   |   |   |   \___/                        +-> Base Offset
+    |   |   \___/     |                                  (Bits 0-9)
+    |   |     |       +-> Video Buffer Size 
+    |   |     |                 (Bits 10-11)
+    |   |     +---------> Video Page Selector
+    |   |                       (Bits 12-13)
+    \___/
+      +-> Ignored bits (X)
+```
+
+##### 1. Video Page Selector (Bits 13–12)
+Selects the base 16 KB RAM boundary for the display buffer:
+* **`00`**: `&0000 - &3FFF`
+* **`01`**: `&4000 - &7FFF`
+* **`10`**: `&8000 - &BFFF`
+* **`11`**: `&C000 - &FFFF` *(Default configuration)*
+
+##### 2. Video Buffer Size (Bits 11–10)
+Defines the depth of the active display buffer page:
+* **`00`**: 16 KB
+* **`01`**: 16 KB
+* **`10`**: 16 KB
+* **`11`**: 32 KB
+
+##### 3. Screen Offset (Bits 9–0)
+Specifies the starting memory offset inside the selected bank. This offset value is added directly to screen line addresses, modulo `&0800`.
 

@@ -1,6 +1,6 @@
-### PSG Register Port I/O & I/O Ports
+### PSG Register Port I/O & Bus Operations
 
-The Amstrad CPC incorporates a General Instrument AY-3-8912 Programmable Sound Generator (PSG).
+The Amstrad CPC, CPC+, and KC Compact systems feature an AY-3-8912 Programmable Sound Generator running at a fixed 1 MHz frequency.
 
 #### Register Read Bit-Masking
 When registers are read back from the AY-3-8912, certain unused bits are forced to `0` regardless of what value was originally written:
@@ -31,3 +31,25 @@ The AY-3-8912 physically possesses only **Port A** on its IC packaging. **Port B
 ##### CPC Hardware Routing
 * **Port A Pin Routing:** Connected directly to the CPC Keyboard Matrix lines. The OS assumes Port A is configured as Input. If reprogrammed to Output, the keyboard becomes entirely unresponsive.
 * **Port B Emulation Note:** Since Port B has no physical pins, reading Register 15 in Input Mode (Register 7 Bit 7 = 0) must always return `&FF` to the CPU.
+
+#### PSG-PPI Control Bus Interface
+The CPU cannot communicate with the PSG directly. All bus transitions are managed by writing to PPI Port C, which controls the PSG's `BDIR` and `BC1` signals:
+
+| PPI Port C Bit 7 (BDIR) | PPI Port C Bit 6 (BC1) | Selected PSG Bus Function | Description |
+| :---: | :---: | :--- | :--- |
+| 0 | 0 | **Inactive Mode** | PSG disconnects its data bus. No read/write occurs. |
+| 0 | 1 | **Read Register** | PSG outputs the contents of the currently selected register to PPI Port A. |
+| 1 | 0 | **Write Register** | PSG writes the data byte on PPI Port A into the currently selected register. |
+| 1 | 1 | **Select Register** | PSG latches the register address byte on PPI Port A to select a target register (Registers 0–15). |
+
+#### The "Inactive" Bus Transition Rule
+To prevent data bus collisions and internal state corruption, software must transition the PSG through the **Inactive state (`00`)** before initiating any function changes (such as transitioning from *Select Register* to *Write Register*).
+* **ASIC Emulation Note:** While physical CPC models are somewhat forgiving of omitted inactive cycles, the CPC+ ASIC emulation layer is strictly intolerant. Failing to insert inactive phases between PSG function changes will corrupt the sound registers on CPC+ hardware.
+
+#### Hardware Quirks
+
+##### Low Tone Period Cutoff
+If a channel's 12-bit Tone Period registers (representing the frequency divisor) are set in the range of **`0` to `4`**, the analog generation hardware is unable to resolve the clock output. The PSG channel falls silent.
+
+##### Port B Read Default
+Since the AY-3-8912 model lacks a physical Port B interface on its packaging, reading Register 15 when Port B is configured as input (Register 7, Bit 7 = 0) must always return `&FF`.
