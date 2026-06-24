@@ -27,3 +27,6 @@
     - [Drive Set Up Timing & Parameters](disk/parameters.md)
 - [6. Sound Hardware](sound/index.md)
     - [PSG Register Port I/O & Bus Operations](sound/psg_io.md)
+- [7. Cassette Storage & CDT Format](cassette/index.md)
+    - [Cassette Hardware Interface](cassette/hardware.md)
+    - [CDT Tape Image Format](cassette/cdt_format.md)
