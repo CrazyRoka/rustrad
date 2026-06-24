@@ -22,6 +22,8 @@
     - [Gate Array Interrupt Generation](video/gate_array_interrupts.md)
     - [Sprite Handling (Software vs. CPC+ Hardware)](video/sprites.md)
 - [5. Disk Controller & AMSDOS](disk/index.md)
+    - [FDC Low-Level Registers](disk/fdc_registers.md)
+    - [FDC Command Phase & Instructions](disk/fdc_commands.md)
     - [Drive Set Up Timing & Parameters](disk/parameters.md)
 - [6. Sound Hardware](sound/index.md)
     - [PSG Register Port I/O & Bus Operations](sound/psg_io.md)

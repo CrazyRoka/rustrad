@@ -1,11 +1,11 @@
 # Disk Storage Subsystem Overview
 
-Disk storage on the Amstrad CPC is controlled by a dedicated NEC uPD765 (or compatible) Floppy Disk Controller (FDC). This chip works alongside the Amstrad Microcomputer System Disk Operating System (AMSDOS).
+Disk storage on the Amstrad CPC is controlled by a dedicated NEC uPD765 (specifically the µPD765A or µPD765B) Floppy Disk Controller (FDC). 
 
 ```
           +-------------------+
-CPU ----> |  Floppy Disk Ctrl | <---> [ FDD A ]
-          |    (NEC uPD765)   | <---> [ FDD B ]
+CPU ----> |  Floppy Disk Ctrl | <---> [ FDD A ] (3" Drive)
+          | (NEC uPD765A/B)   | <---> [ FDD B ] (External Option)
           +-------------------+
                     ^
                     | (Timing Control)
@@ -14,14 +14,10 @@ CPU ----> |  Floppy Disk Ctrl | <---> [ FDD A ]
           +-------------------+
 ```
 
-## Functional Roles
-
-### NEC uPD765 FDC
-Manages low-level sector reading, writing, and formatting. It decodes standard sector configurations (MFM) and handles track-seeking commands. The CPC interface is non-DMA; data transfers are handled directly by the CPU through polling loops.
-
-### Drive Calibration Timers
-AMSDOS maintains a software calibration block in RAM (`&BE44`) to enforce motor spin-up delays, head settle times, and drive stepping periods. Accurate emulation of these timing parameters is necessary for software that implements custom floppy-based copy protections.
+## Low-Level Operations
+The uPD765 is an 8 MHz, active-high, non-DMA (polled interrupt) or DMA controller. In standard Amstrad CPC and DDI-1 configurations, data transfers are non-DMA, driven by high-speed CPU polling loops synchronized to the controller's hardware registers.
 
 ## Chapter Directory
+* [FDC Low-Level Registers](fdc_registers.md)
+* [FDC Command Phase & Instructions](fdc_commands.md)
 * [Drive Set Up Timing & Parameters](parameters.md)
-
