@@ -1,4 +1,4 @@
-use crate::memory::CpcMemory;
+use crate::{Ppi, memory::CpcMemory};
 use z80::Bus;
 
 pub struct Cpc {
@@ -6,10 +6,12 @@ pub struct Cpc {
     memory: CpcMemory,
     lower_rom_enabled: bool,
     upper_rom_enabled: bool,
+    // Peripherals
+    ppi: Ppi,
 }
 
 impl Cpc {
-    pub fn new(memory: CpcMemory, rom: &[u8]) -> Self {
+    pub fn new(memory: CpcMemory, rom: &[u8], ppi: Ppi) -> Self {
         assert_eq!(rom.len(), 0x8000, "ROM length is supposed to be 32KB");
         let mut rom_clone = [0; 0x8000];
         rom_clone.copy_from_slice(rom);
@@ -20,6 +22,7 @@ impl Cpc {
             lower_rom_enabled: true,
             // TODO: check if upper rom is enabled by default or not
             upper_rom_enabled: true,
+            ppi,
         }
     }
 }
@@ -38,11 +41,15 @@ impl Bus for Cpc {
     }
 
     fn port_read(&self, port: u16) -> u8 {
-        todo!()
+        if port == 0xF57F || port == 0xF600 || port == 0xF63F {
+            return self.ppi.read(port);
+        }
+        todo!("Received port {:#04X}", port)
     }
 
     fn port_write(&mut self, port: u16, value: u8) {
         if port == 0x7F00 {
+            // TODO: handle other bits
             self.lower_rom_enabled = (value & (1 << 2)) == 0;
             self.upper_rom_enabled = (value & (1 << 3)) == 0;
         }
@@ -67,11 +74,17 @@ mod tests {
         rom
     }
 
-    #[test]
-    fn test_ram_read_write() {
+    fn create_cpc() -> Cpc {
         let memory = CpcMemory::new_64k();
         let rom = create_test_rom();
-        let mut cpc = Cpc::new(memory, &rom);
+        let ppi = Ppi::new();
+
+        Cpc::new(memory, &rom, ppi)
+    }
+
+    #[test]
+    fn test_ram_read_write() {
+        let mut cpc = create_cpc();
 
         // Middle area
         for i in 0x4000..=0xBFFF {
@@ -82,9 +95,7 @@ mod tests {
 
     #[test]
     fn test_rom_default_mapping() {
-        let memory = CpcMemory::new_64k();
-        let rom = create_test_rom();
-        let cpc = Cpc::new(memory, &rom);
+        let mut cpc = create_cpc();
 
         // Lower ROM should be active by default
         assert_eq!(cpc.read(0x1000), 0x11);
@@ -95,9 +106,7 @@ mod tests {
 
     #[test]
     fn test_write_through_to_ram() {
-        let memory = CpcMemory::new_64k();
-        let rom = create_test_rom();
-        let mut cpc = Cpc::new(memory, &rom);
+        let mut cpc = create_cpc();
 
         // Writes to 0x1000 (Lower ROM region) should pass through to RAM
         cpc.write(0x1000, 0x99);
@@ -113,9 +122,7 @@ mod tests {
 
     #[test]
     fn test_gate_array_rom_control() {
-        let memory = CpcMemory::new_64k();
-        let rom = create_test_rom();
-        let mut cpc = Cpc::new(memory, &rom);
+        let mut cpc = create_cpc();
 
         // Write values to underlying RAM in ROM spaces
         cpc.write(0x1000, 0xAA);

@@ -12,12 +12,12 @@ During Z80 I/O instruction execution, address lines are driven as follows:
 #### The "One Low Bit" Selection Rule & Hardware Hazards
 The Amstrad CPC hardware selects its main internal and expansion peripherals by checking if specific bits in the upper half of the address bus (`A15`–`A10`) are driven **low (0)**:
 
-* `A15` low $\rightarrow$ Gate Array Select
-* `A14` low $\rightarrow$ CRTC Select
-* `A13` low $\rightarrow$ ROM Select
-* `A12` low $\rightarrow$ Printer Port Select
-* `A11` low $\rightarrow$ Intel 8255 PPI Select
-* `A10` low $\rightarrow$ Expansion Peripherals Select
+* `A15` low → Gate Array Select
+* `A14` low → CRTC Select
+* `A13` low → ROM Select
+* `A12` low → Printer Port Select
+* `A11` low → Intel 8255 PPI Select
+* `A10` low → Expansion Peripherals Select
 
 ##### Bus Contention Warning
 A robust emulator should monitor and flag situations where **more than one** of these six selection bits (`A15`–`A10`) are simultaneously driven low. On physical hardware:
