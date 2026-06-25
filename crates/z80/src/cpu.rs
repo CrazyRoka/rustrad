@@ -122,6 +122,8 @@ impl Z80 {
             self.halted = false;
             self.iff1 = false;
             self.iff2 = false;
+
+            bus.acknowledge_interrupt();
             return match self.im {
                 InterruptMode::IM0 => {
                     dbg!(
@@ -2290,6 +2292,8 @@ mod tests {
         fn port_write(&mut self, port: u16, value: u8) {
             self.port_inputs.insert(port, value);
         }
+
+        fn acknowledge_interrupt(&mut self) {}
     }
 
     #[test]

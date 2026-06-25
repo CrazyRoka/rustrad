@@ -1,19 +1,23 @@
 use std::time::Instant;
 
-use cpc::{Cpc, CpcMemory, Ppi};
+use cpc::{Cpc, CpcMemory, GateArray, Ppi, Video, WINDOW_HEIGHT, WINDOW_WIDTH};
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 use z80::Z80;
 
-const WINDOW_HEIGHT: usize = 100;
-const WINDOW_WIDTH: usize = 100;
+// TODO: Adjust these values
+const CYCLES_PER_LINE: u64 = 256;
+const LINES_PER_FRAME: u64 = 312;
+const CYCLES_PER_FRAME: u64 = CYCLES_PER_LINE * LINES_PER_FRAME;
 
 const ROM_BYTES_464_MODEL: &[u8] = include_bytes!("../../../roms/cpc464.rom");
 
 fn main() {
     let memory = CpcMemory::new_64k();
     let ppi = Ppi::new();
-    let mut bus = Cpc::new(memory, ROM_BYTES_464_MODEL, ppi);
+    let gate_array = GateArray::new();
+    let mut bus = Cpc::new(memory, ROM_BYTES_464_MODEL, gate_array, ppi);
     let mut cpu = Z80::new();
+    let video = Video::new();
 
     let mut buffer: Vec<u32> = vec![0; WINDOW_HEIGHT * WINDOW_WIDTH];
     let mut window = match Window::new(
@@ -34,6 +38,7 @@ fn main() {
     let mut unlimited_fps = false;
     let mut last_fps_update = Instant::now();
     let mut frame_count = 0;
+    let mut cycles_counter = 0;
 
     while window.is_open() {
         if window.is_key_pressed(Key::F1, KeyRepeat::No) {
@@ -45,9 +50,18 @@ fn main() {
             }
         }
 
-        loop {
+        while cycles_counter < CYCLES_PER_FRAME {
             let cycles = cpu.execute(&mut bus);
+            if cycles_counter / CYCLES_PER_LINE != (cycles_counter + cycles) / CYCLES_PER_LINE {
+                bus.gate_array_mut().hsync();
+                if bus.gate_array_mut().interrupt_requested() {
+                    cpu.request_int(0xFF);
+                }
+            }
+            cycles_counter += cycles;
         }
+        cycles_counter -= CYCLES_PER_FRAME;
+        video.render(&bus, &mut buffer);
 
         if let Err(err) = window.update_with_buffer(&buffer, WINDOW_WIDTH, WINDOW_HEIGHT) {
             panic!("Failed to update window: {}", err);
@@ -64,7 +78,7 @@ fn main() {
             };
 
             window.set_title(&format!(
-                "ZX Spectrum Emulator | FPS: {:.1} | Mode: {} [Press F1 to Toggle]",
+                "Amstrad CPC 464 | FPS: {:.1} | Mode: {} [Press F1 to Toggle]",
                 fps, mode_str
             ));
 

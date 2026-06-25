@@ -104,7 +104,7 @@ impl Into<u8> for Palette {
 }
 
 impl Palette {
-    fn get_color(&self) -> u32 {
+    pub fn color(&self) -> u32 {
         match self {
             Self::Black => 0x000000,
             Self::Blue => 0x000080,
@@ -245,17 +245,19 @@ impl GateArray {
     }
 
     pub fn hsync(&mut self) {
+        if self.interrupt_counter == 52 {
+            self.interrupt_counter = 0;
+        }
+
         self.interrupt_counter += 1;
         if self.interrupt_counter == 52 {
             self.interrupt_requested = true;
         }
-        if self.vsync {
+        if self.vsync && self.vsync_counter < 2 {
             self.vsync_counter += 1;
             if self.vsync_counter == 2 {
                 self.interrupt_requested = self.interrupt_counter < 32;
                 self.interrupt_counter = 0;
-                self.vsync = false;
-                self.vsync_counter = 0;
             }
         }
     }
@@ -269,9 +271,14 @@ impl GateArray {
         self.interrupt_requested = false;
     }
 
-    pub fn set_vsync(&mut self) {
-        if !self.vsync {
-            self.vsync = true;
+    pub fn set_vsync(&mut self, value: bool) {
+        if value {
+            if !self.vsync {
+                self.vsync = true;
+                self.vsync_counter = 0;
+            }
+        } else {
+            self.vsync = false;
             self.vsync_counter = 0;
         }
     }
@@ -544,9 +551,9 @@ mod tests {
     #[test]
     fn test_palette_color_mapping() {
         // Test a few known hardware colors to ensure matching values are returned.
-        assert_eq!(Palette::Black.get_color(), 0x000000);
-        assert_eq!(Palette::BrightRed.get_color(), 0xFF0000);
-        assert_eq!(Palette::BrightWhite.get_color(), 0xFFFFFF);
+        assert_eq!(Palette::Black.color(), 0x000000);
+        assert_eq!(Palette::BrightRed.color(), 0xFF0000);
+        assert_eq!(Palette::BrightWhite.color(), 0xFFFFFF);
     }
 
     #[test]
@@ -581,7 +588,7 @@ mod tests {
             (31, Palette::PastelBlue),
         ];
         for (idx, expected_palette) in expected {
-            assert_eq!(Palette::from(idx).get_color(), expected_palette.get_color());
+            assert_eq!(Palette::from(idx).color(), expected_palette.color());
             let back: u8 = Palette::from(idx).into();
             assert_eq!(
                 back, idx,
@@ -594,14 +601,11 @@ mod tests {
     #[test]
     fn test_palette_from_u8_duplicate_indices() {
         // Hardware duplicates — these indices alias to existing colors
-        assert_eq!(Palette::from(1).get_color(), Palette::White.get_color());
-        assert_eq!(Palette::from(8).get_color(), Palette::Purple.get_color());
-        assert_eq!(
-            Palette::from(9).get_color(),
-            Palette::PastelYellow.get_color()
-        );
-        assert_eq!(Palette::from(16).get_color(), Palette::Blue.get_color());
-        assert_eq!(Palette::from(17).get_color(), Palette::SeaGreen.get_color());
+        assert_eq!(Palette::from(1).color(), Palette::White.color());
+        assert_eq!(Palette::from(8).color(), Palette::Purple.color());
+        assert_eq!(Palette::from(9).color(), Palette::PastelYellow.color());
+        assert_eq!(Palette::from(16).color(), Palette::Blue.color());
+        assert_eq!(Palette::from(17).color(), Palette::SeaGreen.color());
     }
 
     #[test]
@@ -637,7 +641,7 @@ mod tests {
         ];
         let mut seen = std::collections::HashSet::new();
         for p in all {
-            assert!(seen.insert(p.get_color()), "Duplicate RGB for {:?}", p);
+            assert!(seen.insert(p.color()), "Duplicate RGB for {:?}", p);
         }
         assert_eq!(seen.len(), 27);
     }
@@ -646,7 +650,7 @@ mod tests {
     fn test_palette_uses_only_cpc_3_level_rgb() {
         // CPC palette uses only 0, 0x80, 0xFF per channel
         for color in 0..=31u8 {
-            let rgb = Palette::from(color).get_color();
+            let rgb = Palette::from(color).color();
             let r = (rgb >> 16) & 0xFF;
             let g = (rgb >> 8) & 0xFF;
             let b = rgb & 0xFF;
@@ -693,7 +697,7 @@ mod tests {
             (Palette::BrightWhite, 0xFFFFFF),
         ];
         for (p, rgb) in expected {
-            assert_eq!(p.get_color(), rgb, "RGB mismatch for {:?}", p);
+            assert_eq!(p.color(), rgb, "RGB mismatch for {:?}", p);
         }
     }
 
@@ -773,18 +777,15 @@ mod tests {
         ga.write(0x7F00, 0x00);
 
         ga.write(0x7F00, 0x41); // idx 1 -> White
-        assert_eq!(ga.ink_for_pen(0).get_color(), Palette::White.get_color());
+        assert_eq!(ga.ink_for_pen(0).color(), Palette::White.color());
         ga.write(0x7F00, 0x48); // idx 8 -> Purple
-        assert_eq!(ga.ink_for_pen(0).get_color(), Palette::Purple.get_color());
+        assert_eq!(ga.ink_for_pen(0).color(), Palette::Purple.color());
         ga.write(0x7F00, 0x49); // idx 9 -> PastelYellow
-        assert_eq!(
-            ga.ink_for_pen(0).get_color(),
-            Palette::PastelYellow.get_color()
-        );
+        assert_eq!(ga.ink_for_pen(0).color(), Palette::PastelYellow.color());
         ga.write(0x7F00, 0x50); // idx 16 -> Blue
-        assert_eq!(ga.ink_for_pen(0).get_color(), Palette::Blue.get_color());
+        assert_eq!(ga.ink_for_pen(0).color(), Palette::Blue.color());
         ga.write(0x7F00, 0x51); // idx 17 -> SeaGreen
-        assert_eq!(ga.ink_for_pen(0).get_color(), Palette::SeaGreen.get_color());
+        assert_eq!(ga.ink_for_pen(0).color(), Palette::SeaGreen.color());
     }
 
     #[test]
@@ -1064,6 +1065,11 @@ mod tests {
         // The 52nd HSYNC should trigger the interrupt request
         ga.hsync();
         assert!(ga.interrupt_requested());
+        assert_eq!(ga.interrupt_counter, 52);
+
+        ga.hsync();
+        assert!(ga.interrupt_requested());
+        assert_eq!(ga.interrupt_counter, 1);
     }
 
     #[test]
@@ -1157,6 +1163,7 @@ mod tests {
         assert!(ga.interrupt_requested());
 
         ga.acknowledge_interrupt();
+        assert_eq!(ga.interrupt_counter, 20);
         assert!(
             !ga.interrupt_requested(),
             "Interrupt request should be cleared after acknowledgement"
@@ -1189,7 +1196,11 @@ mod tests {
         }
         assert!(ga.interrupt_requested());
 
-        ga.set_vsync();
+        // Pass few more hsync, to get counter closer to 30
+        for _ in 0..30 {
+            ga.hsync();
+        }
+        ga.set_vsync(true);
         assert!(
             ga.interrupt_requested(),
             "VSYNC should clear a pending interrupt request only after 2 HSYNC"
@@ -1213,7 +1224,7 @@ mod tests {
             ga.hsync();
         }
 
-        ga.set_vsync();
+        ga.set_vsync(true);
         ga.hsync();
         ga.hsync();
 
@@ -1298,7 +1309,7 @@ mod tests {
         }
 
         // VSYNC goes active
-        ga.set_vsync();
+        ga.set_vsync(true);
 
         // First HSYNC during VSYNC
         ga.hsync();
@@ -1314,5 +1325,45 @@ mod tests {
         }
         ga.hsync();
         assert!(ga.interrupt_requested());
+    }
+
+    #[test]
+    fn test_vsync_clearing() {
+        let mut ga = GateArray::new();
+        ga.set_vsync(true);
+        ga.hsync();
+
+        assert_eq!(ga.vsync, true);
+        assert_eq!(ga.vsync_counter, 1);
+
+        ga.set_vsync(true);
+        assert_eq!(ga.vsync, true);
+        assert_eq!(ga.vsync_counter, 1);
+
+        ga.set_vsync(false);
+        assert_eq!(ga.vsync, false);
+        assert_eq!(ga.vsync_counter, 0);
+    }
+
+    #[test]
+    fn test_vsync_continuous_for_multiple_lines() {
+        let mut ga = GateArray::new();
+        ga.set_vsync(true);
+
+        ga.hsync();
+        ga.hsync();
+
+        assert_eq!(ga.vsync, true);
+        assert_eq!(ga.vsync_counter, 2);
+        assert_eq!(ga.interrupt_requested(), true);
+
+        for _ in 0..6 {
+            ga.set_vsync(true);
+            ga.hsync();
+        }
+
+        assert_eq!(ga.vsync, true);
+        assert_eq!(ga.vsync_counter, 2);
+        assert_eq!(ga.interrupt_requested(), true);
     }
 }

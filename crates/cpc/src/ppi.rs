@@ -1,12 +1,18 @@
-pub struct Ppi {}
+pub struct Ppi {
+    vsync_active: bool,
+}
 
 impl Ppi {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            vsync_active: false,
+        }
     }
 
     pub fn read(&self, addr: u16) -> u8 {
         match addr >> 8 {
+            // TODO: handle
+            0xF4 => 0xFF,
             0xF5 => self.read_port_b(),
             0xF6 => self.read_port_c(),
             _ => todo!("Implement port {:#04X}", addr),
@@ -14,7 +20,18 @@ impl Ppi {
     }
 
     pub fn write(&mut self, addr: u16, value: u8) {
-        todo!()
+        match addr {
+            // TODO: handle
+            0xF400 | 0xF782 | 0xF43F | 0xF40E | 0xF730 | 0xF470 => {}
+            0xF600..=0xF6FF => {}
+            _ => {
+                todo!(
+                    "Unexpected PPI write at {:#04X} with value {:#02X}",
+                    addr,
+                    value
+                );
+            }
+        }
     }
 
     fn read_port_b(&self) -> u8 {
@@ -49,7 +66,7 @@ impl Ppi {
             + EXP * 1
             + SCREEN_FREQUENCY * 1
             + MANUFACTURER_JUMPER
-            + VSYNC * 1
+            + if self.vsync_active { VSYNC * 1 } else { 0 }
     }
 
     fn read_port_c(&self) -> u8 {

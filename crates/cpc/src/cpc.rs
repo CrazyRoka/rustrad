@@ -22,6 +22,14 @@ impl Cpc {
             ppi,
         }
     }
+
+    pub fn gate_array_mut(&mut self) -> &mut GateArray {
+        &mut self.gate_array
+    }
+
+    pub fn gate_array(&self) -> &GateArray {
+        &self.gate_array
+    }
 }
 
 impl Bus for Cpc {
@@ -40,16 +48,28 @@ impl Bus for Cpc {
     }
 
     fn port_read(&self, port: u16) -> u8 {
-        if port == 0xF57F || port == 0xF600 || port == 0xF63F {
-            return self.ppi.read(port);
+        match port >> 8 {
+            0xF4..=0xF7 => self.ppi.read(port),
+            _ => todo!("Unexpected port read at address {:#04X}", port),
         }
-        todo!("Received port {:#04X}", port)
     }
 
     fn port_write(&mut self, port: u16, value: u8) {
-        if port == 0x7F00 {
-            self.gate_array.write(port, value);
+        match port >> 8 {
+            // TODO: handle
+            0xEF | 0xBC | 0xBD | 0xDF | 0xF8 => {}
+            0xF4..=0xF7 => self.ppi.write(port, value),
+            0x7F => self.gate_array.write(port, value),
+            _ => todo!(
+                "Unexpected port write at address {:#04X} with value {:#02x}",
+                port,
+                value
+            ),
         }
+    }
+
+    fn acknowledge_interrupt(&mut self) {
+        self.gate_array.acknowledge_interrupt();
     }
 }
 
