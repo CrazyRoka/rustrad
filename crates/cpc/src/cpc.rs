@@ -1,17 +1,16 @@
-use crate::{Ppi, memory::CpcMemory};
+use crate::{GateArray, Ppi, memory::CpcMemory};
 use z80::Bus;
 
 pub struct Cpc {
     rom: [u8; 0x8000], // 32 KB
     memory: CpcMemory,
-    lower_rom_enabled: bool,
-    upper_rom_enabled: bool,
     // Peripherals
+    gate_array: GateArray,
     ppi: Ppi,
 }
 
 impl Cpc {
-    pub fn new(memory: CpcMemory, rom: &[u8], ppi: Ppi) -> Self {
+    pub fn new(memory: CpcMemory, rom: &[u8], gate_array: GateArray, ppi: Ppi) -> Self {
         assert_eq!(rom.len(), 0x8000, "ROM length is supposed to be 32KB");
         let mut rom_clone = [0; 0x8000];
         rom_clone.copy_from_slice(rom);
@@ -19,9 +18,7 @@ impl Cpc {
         Self {
             rom: rom_clone,
             memory,
-            lower_rom_enabled: true,
-            // TODO: check if upper rom is enabled by default or not
-            upper_rom_enabled: true,
+            gate_array,
             ppi,
         }
     }
@@ -30,8 +27,10 @@ impl Cpc {
 impl Bus for Cpc {
     fn read(&self, addr: u16) -> u8 {
         match addr {
-            0x0000..=0x3FFF if self.lower_rom_enabled => self.rom[addr as usize],
-            0xC000..=0xFFFF if self.upper_rom_enabled => self.rom[addr as usize - 0x8000],
+            0x0000..=0x3FFF if self.gate_array.lower_rom_enabled() => self.rom[addr as usize],
+            0xC000..=0xFFFF if self.gate_array.upper_rom_enabled() => {
+                self.rom[addr as usize - 0x8000]
+            }
             _ => self.memory.read(addr),
         }
     }
@@ -49,9 +48,7 @@ impl Bus for Cpc {
 
     fn port_write(&mut self, port: u16, value: u8) {
         if port == 0x7F00 {
-            // TODO: handle other bits
-            self.lower_rom_enabled = (value & (1 << 2)) == 0;
-            self.upper_rom_enabled = (value & (1 << 3)) == 0;
+            self.gate_array.write(port, value);
         }
     }
 }
@@ -78,8 +75,9 @@ mod tests {
         let memory = CpcMemory::new_64k();
         let rom = create_test_rom();
         let ppi = Ppi::new();
+        let gate_array = GateArray::new();
 
-        Cpc::new(memory, &rom, ppi)
+        Cpc::new(memory, &rom, gate_array, ppi)
     }
 
     #[test]
@@ -95,7 +93,7 @@ mod tests {
 
     #[test]
     fn test_rom_default_mapping() {
-        let mut cpc = create_cpc();
+        let cpc = create_cpc();
 
         // Lower ROM should be active by default
         assert_eq!(cpc.read(0x1000), 0x11);
