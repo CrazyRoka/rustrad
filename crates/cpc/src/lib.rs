@@ -1,5 +1,6 @@
 mod cpc;
 mod gate_array;
+mod keyboard;
 mod memory;
 mod ppi;
 mod video;
