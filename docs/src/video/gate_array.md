@@ -86,10 +86,22 @@ Assigns a physical hardware color value to the currently selected pen. Bits 4–
 The custom Amstrad Gate Array translates internal Pen selections to physical colors and controls the display frame parameters.
 
 #### Scanline and Frame Timing (Base Model: CPC 464)
-* **Scanline Duration:** Exactly 64 microseconds.
+* **Scanline Duration:** Exactly 64 microseconds (1 CRTC character = 1 µs).
 * **Total Scanlines per Frame:** 312 scanlines (for standard 50 Hz PAL systems) or 262 scanlines (for NTSC 60 Hz configurations).
-* **Vertical Sync (VSYNC) Width:** Fixed at approximately 800 microseconds (roughly 12.5 scanlines) as programmed inside the CRTC.
-* **Horizontal Sync (HSYNC) Width:** Dictated by the CRTC register 3 configuration, typically operating on a nominal 52 microsecond period between active horizontal lines.
+* **Horizontal Sync (HSYNC) Width:** The CRTC default is 14 character clocks (14 µs). The Gate Array processes this and generates a Composite HSYNC (C-HSYNC) monitor signal with a maximum duration of **4 microseconds**. The GA forces black border color for 2 µs before and after the 4 µs C-HSYNC pulse.
+* **Vertical Sync (VSYNC) Width:**
+  * **CRTC VSYNC:** Programmable via R3h. Defaults to 8 scanlines (512 µs) on Type 0, 3, 4, and fixed at 16 scanlines (1024 µs) on Type 1, 2.
+  * **Monitor C-VSYNC:** The Gate Array generates a fixed composite VSYNC signal for the monitor lasting exactly **4 scanlines (256 µs)**. This signal begins at the end of the 2nd HSYNC after the CRTC VSYNC rising edge, and ends at the end of the 6th HSYNC.
+  * **Total VBLANK (Black Lines):** The Gate Array forces black borders for exactly **26 scanlines** following the CRTC VSYNC signal, regardless of the programmed CRTC VSYNC width.
+
+#### Composite Sync (C-SYNC) Generation
+The Gate Array generates a composite sync signal (C-SYNC) for the monitor by combining HSYNC and VSYNC using an XNOR logic gate. To manage this, the GA maintains internal counters:
+* **H06 Counter:** Counts character clocks during an active HSYNC to manage the timing of the C-HSYNC pulse.
+* **V26 Counter:** Counts HSYNC transitions during an active VSYNC period.
+  * When VSYNC is detected, `V26` resets to 0.
+  * `V26` increments on every HSYNC end.
+  * C-VSYNC monitor signal goes active when `V26 = 2` and inactive when `V26 = 6`.
+  * Black border enforcement stops when `V26 = 26`.
 
 #### Palette Definition Lookup Table
 The CPC uses 5 bits to define a color code. While this allows for 32 theoretical values, the three-state logic (0%, 50%, 100%) applied to the Red, Green, and Blue pins yields exactly **27 distinct analog colors**. 

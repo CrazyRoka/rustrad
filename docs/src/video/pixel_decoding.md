@@ -28,12 +28,6 @@ Pen Index for Pixel x = (Bit[x+4] << 1) OR Bit[x]
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | p0(1) | p1(1) | p2(1) | p3(1) | p0(0) | p1(0) | p2(0) | p3(0) |
 
-* **Example calculation:** If byte is `&10` (binary `00010000`):
-  * `p0 = (Bit 7 << 1) OR Bit 3 = (0 << 1) OR 0 = 0`
-  * `p1 = (Bit 6 << 1) OR Bit 2 = (0 << 1) OR 0 = 0`
-  * `p2 = (Bit 5 << 1) OR Bit 1 = (0 << 1) OR 0 = 0`
-  * `p3 = (Bit 4 << 1) OR Bit 0 = (1 << 1) OR 0 = 2`
-
 ---
 
 #### Mode 0 (Low Resolution / Double Width)
@@ -57,3 +51,21 @@ When bits 1 and 0 of the Gate Array's Mode and ROM Configuration register (RMR) 
 
 * **Physical Characteristics:** Mode 3 displays at a horizontal resolution of 160 pixels (matching Mode 0 dimensions), but restricts the color selection to a maximum of **4 active pens** (limited to Pens 0–3).
 * **Emulator Note:** To emulate Mode 3 correctly, map pixel bits using the physical layout of Mode 0, but mask or ignore pen selections that fall outside the Pen 0–3 boundary.
+
+---
+
+### Pixel Alignment & Graphics Mode Splitting
+
+When the graphics mode is dynamically changed during a line, specific hardware quirks occur:
+
+#### Mode 2 Early Display Offset
+* **The Quirk:** On standard CPCs equipped with a **Gate Array 40007, 40008, 40010** or the **Pre-ASIC 40226 (CRTC Type 4)**, the display of pixels in **Mode 2** is processed exactly **1/16 μs (0.0625 μs, or 1 Mode 2 Pixel-M2)** earlier than for Mode 0, 1, or 3. 
+* **The Exception:** The CPC+ **ASIC 40489 (CRTC Type 3)** does not exhibit this offset. Mode 2 is aligned with the other graphics modes.
+* **Border Impact:** Changing to Mode 2 causes the active Border display to terminate 1 Pixel-M2 earlier at the left, and commence 1 Pixel-M2 earlier at the right side of the screen.
+
+#### Mid-Byte Mode Switch Cooking
+When a mode change is written to the Gate Array, the change takes effect instantly on the 3rd microsecond of the `OUT` instruction. Since the Gate Array may be in the middle of processing a byte from VRAM, the internal bit-shift registers and latching logic are immediately converted to the new mode parameters:
+* **GA 40010:** Any raw data bits that have already been shifted out for the previous mode's pixels are assumed to be `0` when calculating the remaining pixel pen values in the new mode.
+* **GA 40007 / 40008:** Any raw data bits that have already been shifted out are treated as `1` in the new mode's pen calculation.
+* **Pre-ASIC 40226 (CRTC Type 4):** Exhibits its own distinct pixel cooking behavior. Display stops for exactly 32 Pixel-M2 (2 µs), and the shift register reuses bits similarly to the 40010, but with different alignment offsets based on the 2nd Pixel-M2 of the 7th VRAM byte.
+* **Implications:** This "pixel cooking" distorts the remaining pixels of the transitioning byte, combining properties of both the old and new mode. Cycle-accurate emulators must track the exact sub-microsecond pixel clock boundary where the mode register is modified to correctly mix these transition pixels.

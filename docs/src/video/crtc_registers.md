@@ -19,6 +19,25 @@ The CRTC is selected when address bus line `A14` is driven low (`0`). Bits `A9` 
 
 ---
 
+### Port Access Timing & ASIC Execution Delays
+
+The cycle on which a register write takes effect depends on the instruction used and the target CRTC/ASIC hardware:
+
+#### Standard Write (OUT (C), r8 / OUT (C), 0)
+* **CRTC Type 0, 1, 2:** The register write is processed on the **3rd microsecond** of the instruction.
+* **CRTC Type 3, 4 (ASIC):** The register write is processed on the **4th microsecond**. This introduces a 1 μs delay compared to older CRTC controllers, which must be emulated to maintain cycle-accurate raster positioning.
+
+#### Immediate Write (OUT (n), A)
+* **All CRTC Types:** The register write is processed on the **3rd microsecond** of the instruction.
+
+#### Block Write (OUTI / OUTD)
+* **All CRTC Types (0 to 4):** The register write is consistently processed on the **5th microsecond** of the instruction.
+
+#### Read Operations (IN r8, (C) / INI / IND / IN A, (n))
+* **All CRTC Types (0 to 4):** Read operations capture the data bus on the **4th microsecond** of the instruction, except `IN A, (n)` which captures on the **3rd microsecond**.
+
+---
+
 ### Physical Video Address Bus Wiring
 
 The CRTC outputs 14 Memory Address lines (`MA0`–`MA13`) and 5 Raster Address lines (`RA0`–`RA4`). In the Amstrad CPC design, these lines are wired non-linearly to the physical video address bus. This mapping determines the `&0800` step offset between scanlines within a character row:
@@ -53,17 +72,22 @@ Amstrad sourced the 6845 from multiple manufacturers. Because these silicon impl
 
 | Type Number | Physical IC Model | Manufacturer | Notes |
 | :---: | :--- | :--- | :--- |
-| **0** | `UM6845` / `HD6845S` | UMC / Hitachi | Standard in early CPC 464 models and KC Compact. |
+| **0** | `UM6845` / `HD6845S` | UMC / Hitachi | Standard in early CPC 464 models. Same internal behaviors. |
 | **1** | `UM6845R` | UMC | Common in mid-generation models. Features readable status. |
 | **2** | `MC6845` | Motorola | Common in late-generation CPC 464/6128 mainboards. |
 | **3** | `AMS40489` | Amstrad | ASIC-integrated CRTC. Standard in CPC+ series. |
-| **4** | Custom ASIC | Amstrad | Integrated in "cost-down" CPC 6128 mainboards. |
+| **4** | `AMS40226` (Pre-ASIC) | Amstrad | Integrated in "cost-down" CPC 6128 mainboards. |
 
 ---
 
-### Register Accessibility Comparison Table
+### Register Reading & Address Masking Rules
 
-Reading from and writing to registers yields different results depending on the active CRTC Type:
+Register reads return different results depending on the active CRTC Type:
+
+* **Type 0:** Supports reading **R12, R13, R14, R15, R16, and R17** on port `&BF00`. The register selection number is truncated to **5 bits** (e.g., selecting index 108 is treated as index 12). Attempts to read any other register return `0`.
+* **Type 1:** Supports reading **R14, R15, R16, and R17** on port `&BF00`. Attempts to read any other register return `0`, *except* for register 31 (and any index whose lower 5 bits are all `1`, i.e., `xxxxx11111`), which returns a non-zero value (typically `127` or `255`).
+* **Type 2:** Supports reading **R16 and R17** on port `&BF00`. Attempts to read any other register return `0`. Register selection is truncated to **5 bits**.
+* **Type 3 & 4 (ASIC):** Truncates the register selection number to **3 bits** (e.g., reading R4 or R20 yields the value of R12). Supports reading **R16, R17, R10 (ASIC Status 1), R11 (ASIC Status 2), R12, R13, R14, and R15** on both `&BE00` and `&BF00`.
 
 * **`W`** = Write Only. Reading this register returns `0` (Types 0/1/2) or floating bus values.
 * **`R`** = Read Only.
@@ -94,92 +118,89 @@ Reading from and writing to registers yields different results depending on the 
 
 ### Low-Level Status Register (Read Port `&BExx` - Type 1 Only)
 
-On **Type 1 (UM6845R)**, reading from the status port returns real-time vertical sync timing and light-pen feedback:
+On **Type 1 (UM6845R)**, reading from the status port `&BE00` returns real-time vertical sync timing, light pen feedback, and vertical border status:
 
 ```
 Status Register (Type 1 Only):
   Bit 7      Bit 6      Bit 5      Bit 4      Bit 3      Bit 2      Bit 1      Bit 0
 +----------+----------+----------+----------+----------+----------+----------+----------+
-|    0     |  LP_Full |   V_Blk  |    0     |    0     |    0     |    0     |    0     |
+|    0     |  LP_Full |  St_R6   |    0     |    0     |    0     |    0     |    0     |
 +----------+----------+----------+----------+----------+----------+----------+----------+
 ```
 
 * **Bit 6 - LPEN Register Full:** Automatically goes to `1` when a light pen strobe edge occurs. Clears back to `0` whenever `R16` or `R17` are read by the CPU.
-* **Bit 5 - Vertical Blanking Status:** Outputs `1` if the CRTC is currently generating address synchronization within its vertical blanking/retrace period. Returns `0` during active row rendering.
+* **Bit 5 - BORDER R6 Status (St_R6):** This bit is updated on the `C0=R0` position of each line. It returns `1` if the current vertical row has triggered the BORDER due to reaching the R6 register value (`C4 = R6`). It returns `0` if the vertical line display remains active.
+* **Bits 7, 4, 3, 2, 1, 0:** Unused; always return `0`.
+
+On **Type 0 and Type 2**, no physical status register exists. Reading `&BE00` yields high impedance (floating bus) values:
+* **Type 0:** Typically returns `127` or `255`.
+* **Type 2:** Consistently returns `255`.
 
 ---
 
 ### Register Functional Descriptions & Calculations
 
-#### R0 - Horizontal Total (Write Only*)
+#### R0 - Horizontal Total
 * **Function:** Programs the total number of horizontal character times per scanline, including the horizontal retrace period.
-* **Calculation:**
-  ```rust
-  // If target period in character clocks is M:
-  R0_Value = M - 1;
-  ```
+* **Calculation:** `R0_Value = M - 1` (where M is the target period in character clocks).
+* **Type 0 Quirk:** If `R0` is set to `0` or `1`, the CRTC fails to perform internal housekeeping operations that normally occur when `C0` reaches `2`. On Type 0, setting `R0=0` freezes the `C9` (raster) counter indefinitely until `R0` is increased above `1`. Type 1, 2, 3, and 4 handle `R0=0` gracefully without freezing other counters.
 
-#### R1 - Horizontal Displayed (Write Only*)
+#### R1 - Horizontal Displayed
 * **Function:** Programs the active, visible character columns rendered per scanline. Must be strictly less than the programmed value in `R0`.
+* **Overscan Quirk (R1 > R0):** If `R1` is set to a value greater than `R0`, the condition `C0=R1` is never met, preventing the video pointer (`VMA'`) from updating and causing character line repetition.
+  * **Type 0 & 2:** These CRTCs are "ahead" of the Gate Array display. When `C0` reaches `R0` without having reached `R1`, they send a premature `BORDER ON` signal to the Gate Array, resulting in exactly **1 byte (0.5 µs)** of border being displayed between lines.
+  * **Type 1, 3, 4:** Do not generate this intervening border byte when `R1 > R0`.
 
-#### R2 - Horizontal Sync Position (Write Only*)
+#### R2 - Horizontal Sync Position
 * **Function:** Specifies the character clock column index where the HSYNC pulse asserts. Shifting this value changes horizontal positioning (side margins) on the screen. Must be less than `R0`.
-* **Calculation:**
-  ```rust
-  // If target start column is H:
-  R2_Value = H - 1;
-  ```
+* **Calculation:** `R2_Value = H - 1` (where H is the target start column).
 
-#### R3 - Horizontal & Vertical Sync Pulse Widths (Write Only*)
+#### R3 - Horizontal & Vertical Sync Pulse Widths
 Determines horizontal and vertical sync widths.
-* **Horizontal Sync Width (Bits [3..0]):** Programmed in units of character clock cycles (1 to 15). A value of `0` disables the HSYNC output.
+* **Horizontal Sync Width (Bits [3..0]):** Programmed in units of character clock cycles (1 to 15). A value of `0` disables the HSYNC output on Type 0 and 1, but acts as a **16 character** HSYNC on Types 2, 3, and 4.
 * **Vertical Sync Width (Bits [7..4]):** Width behavior is highly dependent on CRTC type:
-  * **Type 0 (HD6845S):** Programmable in units of scanlines (1 to 15). Writing `0` sets the VSYNC width to 16 lines.
-  * **Type 1 / 2 (UM6845R / MC6845):** This upper nibble is ignored. VSYNC is permanently fixed in the silicon at **16 scanlines**.
+  * **Type 0 / 3 / 4:** Programmable in units of scanlines (1 to 15). Writing `0` sets the VSYNC width to 16 lines.
+  * **Type 1 / 2:** This upper nibble is ignored. VSYNC is permanently fixed in the silicon at **16 scanlines**.
+* **Gate Array Interaction:** The Gate Array ignores the exact CRTC VSYNC width and generates its own composite sync (C-VSYNC) for the monitor. The C-VSYNC monitor signal is fixed at **4 scanlines**, generated between the 2nd and 6th HSYNC after the CRTC VSYNC rising edge. The Gate Array forces black borders for a total of **26 scanlines** during this period.
 
-#### R4 - Vertical Total (Write Only*)
-* **Function:** Programs the total number of character rows per video frame, including the vertical retrace period.
-* **Calculation:**
-  ```rust
-  // If target rows per frame is N:
-  R4_Value = N - 1;
-  ```
+#### R4 - Vertical Total
+* **Function:** Programs the total number of character rows per video frame, excluding the vertical adjust lines.
+* **Calculation:** `R4_Value = N - 1` (where N is the target rows per frame).
 
-#### R5 - Vertical Total Adjust (Write Only*)
+#### R5 - Vertical Total Adjust
 * **Function:** Programs an additional number of fractional scanlines (0–31) to fine-tune the vertical frame sync rate (e.g., matching 50 Hz/60 Hz precisely).
+* **Hardware Implementation Delays:**
+  * **Type 0 / 3 / 4:** No dedicated internal `C5` counter exists. The `C9` raster counter is compared directly against the programmed `R5` value during the adjustment phase.
+  * **Type 1 / 2:** Possesses a dedicated physical `C5` adjustment counter.
+* **Type 0 Update Limit:** `R5` updates are only considered if written when `C0 < 3` on the last line of the frame.
 
-#### R6 - Vertical Displayed (Write Only*)
+#### R6 - Vertical Displayed
 * **Function:** Programs the number of active, visible character rows rendered on-screen. Must be less than `R4`.
+* **Type 3 & 4 Quirk:** Because `C4` does not increment during vertical adjustment on ASIC-based CRTCs, setting `R6 = R4` will cause the BORDER to remain active for the last character row as well as the vertical adjustment lines defined by `R5`.
 
-#### R7 - Vertical Sync Position (Write Only*)
+#### R7 - Vertical Sync Position
 * **Function:** Specifies the character row index where the VSYNC pulse asserts. Shifting this value moves the display vertically. Must be less than or equal to `R4`.
-* **Calculation:**
-  ```rust
-  // If target start character row is V:
-  R7_Value = V - 1;
-  ```
+* **Calculation:** `R7_Value = V - 1` (where V is the target start character row).
+* **Type 2 (Ghost VSYNC):** If the `C4 = R7` condition is evaluated while an HSYNC is active (between `C0 = R2` and `C0 = R2 + R3`), the CRTC generates a "Ghost VSYNC". The internal line counter increments as if a VSYNC occurred, but the physical VSYNC pin is not activated, breaking monitor synchronization.
+* **Type 3 & 4 Trigger Condition:** VSYNC is only triggered if `C4 = R7` AND `C9 = C0 = 0`. Modifying `R7` dynamically to match `C4` mid-line will not trigger a VSYNC on these ASIC models.
 
-#### R8 - Interlace & Skew Register (Write Only*)
+#### R8 - Interlace & Skew Register
 * **Interlace Sync Selection (Bits [1..0]):**
-  * `00` / `10` = Non-Interlace Mode (Standard CPC configuration).
+  * `00` / `10` = Non-Interlace Mode.
   * `01` = Interlace Sync Mode (Overlaps fields to fill scanline gaps).
   * `11` = Interlace Sync & Video Mode (Alternates odd/even character scanlines to double resolution).
-* **Display Enable Skew (Bits [5..4]):** Delays the active display output window by `0`, `1`, or `2` character times.
+* **Display Enable Skew (Bits [5..4] - Type 0, 3, 4 only):** Delays the active display output window by `0`, `1`, or `2` character times. A value of `11` acts as **Border Force ON**, completely disabling character display.
 * **Cursor Skew (Bits [7..6]):** Delays the hardware cursor output by `0`, `1`, or `2` character times.
 
-#### R9 - Maximum Raster Address (Write Only*)
+#### R9 - Maximum Raster Address
 * **Function:** Programs the height of a character row block in scanlines (excluding Interlace mode changes).
 * **Calculation:**
-  ```rust
-  // If target character row height is RN scanlines:
-  // Non-Interlaced or Interlace Sync Mode:
-  R9_Value = RN - 1;
+  * **Non-Interlaced or Interlace Sync Mode:** `R9_Value = RN - 1` (where RN is the character row height).
+  * **Interlace Sync & Video Mode (Type 0 / 3 / 4):** `R9_Value = RN - 2`.
+  * **Interlace Sync & Video Mode (Type 1 / 2):** `R9_Value = RN - 1`.
+* **Type 3 & 4 Reset Logic:** If `R9` is updated with a value lower than the current `C9` counter, `C9` immediately resets to `0` on the next line. This differs from Type 0, 1, and 2 which will let `C9` overflow to 31 before resetting.
 
-  // Interlace Sync & Video Mode:
-  R9_Value = RN - 2;
-  ```
-
-#### R10 - Cursor Start Raster (Write Only*)
+#### R10 - Cursor Start Raster
 * **Bits [4..0]:** Starting scanline within the character row for cursor rendering.
 * **Bits [6..5] - Cursor Display Mode:**
   * `00` = Steady (Non-blinking).
@@ -187,7 +208,7 @@ Determines horizontal and vertical sync widths.
   * `10` = Blinks at 1/16th the vertical frame rate.
   * `11` = Blinks at 1/32nd the vertical frame rate.
 
-#### R11 - Cursor End Raster (Write Only*)
+#### R11 - Cursor End Raster
 * **Function:** Programs the ending scanline (Bits `[4..0]`) of the cursor within the character row block.
 
 #### R12 & R13 - Start Address Register (High / Low)

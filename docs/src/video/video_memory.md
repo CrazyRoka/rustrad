@@ -57,9 +57,9 @@ Your memory mapping logic must decode the bits of this register pair as follows:
     |   |   |   |   |   |   \________________________________________/
     |   |   |   |   |   |                        |
     |   |   |   |   \___/                        +-> Base Offset
-    |   |   \___/     |                                  (Bits 0-9)
-    |   |     |       +-> Video Buffer Size 
-    |   |     |                 (Bits 10-11)
+    |   |   |   |       |                                  (Bits 0-9)
+    |   |   \___/     |-> Video Buffer Size 
+    |   |     |       |                 (Bits 10-11)
     |   |     +---------> Video Page Selector
     |   |                       (Bits 12-13)
     \___/
@@ -82,3 +82,21 @@ Defines the depth of the active display buffer page:
 
 ##### 3. Screen Offset (Bits 9–0)
 Specifies the starting memory offset inside the selected bank. This offset value is added directly to screen line addresses, modulo `&0800`.
+
+---
+
+#### VMA / VMA' Update Rules by CRTC Type
+The CRTC maintains two internal video pointers: `VMA` (the active display pointer) and `VMA'` (the line start pointer). The rules for loading these pointers from R12/R13 differ significantly:
+
+* **Type 0, 3, 4:** `VMA'` and `VMA` are loaded with `R12/R13` exclusively when `C4 = 0` and `C0 = 0` (the start of the frame).
+* **Type 1:** `VMA` is loaded with `R12/R13` whenever `C4 = 0` and `C0 = 0`, regardless of `C9`. This allows software to change the screen offset on *any* scanline within the first character row (`C4=0`) without requiring complex raster splits.
+* **Type 2:** `VMA'` is loaded with `R12/R13` on the last line of the frame when `C0` reaches `R1`. `VMA` is then loaded from `VMA'` at the start of the next line (`C0 = 0`). If `R12/R13` is modified after `C0` exceeds `R1` on the last line, the change is ignored until the next frame.
+
+---
+
+### Overscan Bits and Video Pointer Counter Carry
+
+The internal 14-bit VMA address counter increments sequentially to fetch the active video data. While bits 11, 12, and 13 of the final 16-bit physical RAM address are substituted with the row index `C9`, the internal 14-bit counter still carries overflows logically:
+
+* **Overscan Page-Switching Carry:** When the lower 10 bits of VMA (`MA0` to `MA9`) overflow past their limit, the carry updates bits 10 and 11 of the 14-bit VMA. If these carry bits both reach `1`, they report directly into bits 12 and 13 of the starting address (which map to bits 14 and 15 of the physical memory map). 
+* **Implications:** This allows games and demo routines to display a continuous screen buffer that exceeds the standard 16 KB page boundary (automatically switching from `&FFFF` to `&0000` or `&4000` depending on configuration) without requiring software splits or manual mid-frame register updates.

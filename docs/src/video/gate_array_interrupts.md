@@ -3,16 +3,20 @@
 The Gate Array generates maskable interrupts without an external vector controller (typically operating in Z80 Interrupt Mode 1).
 
 #### Interrupt Counter Circuitry
-The Gate Array maintains a internal **6-bit counter** which increment on every HSYNC signal transition from the CRTC.
-* **Trigger Value:** When the 6-bit counter reaches a value of **52**, the Gate Array clears the counter to 0 and asserts the Z80 `/INT` line low.
-* **Assertion Duration:** `/INT` remains active until the Z80 acknowledges the interrupt.
+The Gate Array maintains an internal **6-bit counter** (commonly denoted as `R52`) which increments on the falling edge of every HSYNC signal transition received from the CRTC.
+* **Trigger Value:** When the 6-bit counter reaches a value of **52**, the Gate Array immediately asserts the Z80 `/INT` line low.
+* **Reset Conditions:** The `R52` counter is cleared to `0` under three distinct hardware events:
+  1. **Overflow:** The counter naturally rolls over from `51` to `0` (triggering an interrupt request).
+  2. **Software Clear:** The CPU writes to the Gate Array Mode and ROM Configuration register (RMR) with **Bit 4 set to 1**.
+  3. **VSYNC Synchronization:** The counter is cleared at the end of the **2nd HSYNC** transition encountered after the rising edge of the CRTC's VSYNC signal.
 
-#### Z80 Acknowledge Sense (`/IORQ` + `/M1`)
-The Gate Array monitors the Z80 control bus for an Interrupt Acknowledge cycle (asserted by Z80 as `/IORQ = 0` and `/M1 = 0`).
-* **Acknowledge Behavior:** 
-  1. The interrupt request line (`/INT`) is cleared to high.
-  2. The highest bit of the 6-bit counter (Bit 5) is cleared to `0`. 
-  3. This limits the counter to a maximum range of 31, preventing a subsequent interrupt from occurring for at least **32 HSYNCs**.
+#### Interrupt Acknowledge & Bit 5 Safety Margin
+When the Z80 acknowledges a pending interrupt (`/IORQ = 0` and `/M1 = 0`), the Gate Array immediately clears the `/INT` line back to high. However, to prevent interrupts from occurring too close to one another, the Gate Array utilizes the highest bit of the counter (Bit 5):
+* **Late-Acknowledge Correction:** If the CPU was executing a long instruction or had disabled interrupts (`DI`), the `R52` counter may have continued counting past 51. 
+* **The Subtraction Rule:** When the interrupt is finally acknowledged:
+  1. The highest bit of the counter (Bit 5) is cleared to `0`.
+  2. If the counter had reached 32 or more (`R52 >= 32`), this bit clearance effectively subtracts 32 from the current value of the counter.
+  3. This enforces a mandatory safety gap of at least **20 HSYNC lines** before another interrupt request can be generated.
 
 #### Software Clear Command
 +If the CPU performs a write to the Gate Array "Select screen mode and rom configuration" register (gated by command bits `7..6 = 10`) and sets **Bit 4 to 1**, the active interrupt request is immediately cleared and the 6-bit counter is reset to `0`.
@@ -33,6 +37,10 @@ CPC+ interrupts bypass standard Gate Array logic when the ASIC features are unlo
 * **Trigger Control:** If the Programmable Raster Interrupt (PRI) register is set to a non-zero value, standard 52-line Gate Array interrupts are disabled.
 * **Counter Operation:** The internal 6-bit counter continues to cycle as normal.
 * **Acknowledge Interlocking:** When a PRI interrupt is acknowledged, the Gate Array's Bit 5 counter bit is cleared, ensuring a 32-line safety gap if standard interrupts are re-enabled.
+
+#### HSYNC Delay on CRTC Type 3 & 4
+On CPC+ and cost-down ASICs, the physical HSYNC signal received from the CRTC is delayed internally by **1 microsecond** (synchronized to the character display boundary). Consequently, with identical register programming, maskable interrupts on these machines trigger exactly **1 μs later** than on older CRTC Type 0, 1, or 2 configurations.
+
 
 ---
 
