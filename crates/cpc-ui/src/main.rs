@@ -50,6 +50,7 @@ fn main() {
 
         while cycles_counter < CYCLES_PER_FRAME {
             let cycles = cpu.execute(&mut bus);
+            // TODO: align cycles according to Gate Array documentation
             if cycles_counter / CYCLES_PER_LINE != (cycles_counter + cycles) / CYCLES_PER_LINE {
                 bus.gate_array_mut().hsync();
                 if bus.gate_array_mut().interrupt_requested() {
