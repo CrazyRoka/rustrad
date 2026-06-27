@@ -30,6 +30,10 @@ impl Cpc {
     pub fn gate_array(&self) -> &GateArray {
         &self.gate_array
     }
+
+    pub fn ppi_mut(&mut self) -> &mut Ppi {
+        &mut self.ppi
+    }
 }
 
 impl Bus for Cpc {
