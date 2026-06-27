@@ -26,9 +26,7 @@ The matrix is structured as 10 selectable lines (columns `0..9`), with each line
 * **Joystick 1 Routing (Shared):** Joystick 1 (`J1`) directions and fire buttons are hardwired in parallel with the standard keyboard keys on Line 6 (Bits 0–5). Pressing these keyboard keys generates inputs identical to Joystick 1 movements.
 * **Joystick 0 Routing (Isolated):** Joystick 0 (`J0`) directions and fire buttons occupy their own dedicated column on Line 9 (Bits 0–5).
 * **Third Fire Button / Mouse Logic:** Bit 6 on Line 6 and Line 9 can optionally be used by software to read a third joystick fire button or the middle button of an AMX-compatible mouse.
-* **Lines 11–14 Return:** If an address selects any matrix line in the range 11 to 14, the read buffer hardware must always return `&FF`.
-<!-- TODO: Verify default return for Matrix Line 10 -->
-<!-- TODO: Verify default return for Matrix Line 15 -->
+* **Lines 10–15 Return Behavior:** The matrix is scanned using the lower 4 bits of PPI Port C, which connects to a **74ALS145 BCD-to-Decimal Decoder**. This decoder only maps binary values `0` through `9` to active-low output lines. If the selected line value is in the range `10` through `15` (binary `1010` to `1111`), the decoder drives **all** outputs High (`1`). This ensures that no keyboard rows are grounded, and due to the PSG's on-chip pull-up resistors on Port A, the input lines float to high, resulting in a read value of exactly **`&FF`** for lines 10 through 15.
 
 ---
 

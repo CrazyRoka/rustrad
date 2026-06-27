@@ -65,7 +65,19 @@ When `A10` is low, the expansion bus is active. The system decodes specific expa
 * **Port Address:** `&F8FF`
 * **Function:** Serves as a master software-triggered reset for all connected expansion devices.
 
-#### Safe User I/O Ranges
+---
+
+### The 7-Bit Printer Port Interface & Pin 14 Ground Hazard
+
+The physical Centronics printer port (`&EFxx`) is managed using a **74LS273 8-bit latch** connected to the CPU data bus. However, the hardware implementation implements several strict deviations from standard 8-bit Centronics specifications:
+
+1. **7-Bit Data Bus**: Only 7 physical data pins (`D0` through `D6`) are wired from the latch to the printer connector. Hardware or software trying to write 8-bit character data must mask off bit 7.
+2. **Data Bus Bit 7 as STROBE**: Pin 14 (the printer's active-low `/STROBE` line) is driven by the data bus's **Bit 7**. Writing a byte with Bit 7 set to `1` is inverted by an on-board 74LS10 NAND gate (configured as an inverter) to pull `/STROBE` Low (`0`), signalling the printer to latch the active data bytes on `D0`–`D6`.
+3. **Motherboard Pin 14 Ground Hazard**: On physical CPC mainboards, Pin 14 of the physical Centronics port is permanently hardwired to **Ground** (GND). On standard Centronics printers, Pin 14 is often used as the "Auto Line Feed" (Auto-LF) signal line. Because this pin is grounded, standard printers are forced into an auto-LF state, resulting in unwanted double-spaced printouts on carriage returns unless the physical line on the printer cable is severed or the printer's internal DIP switches are set to override it.
+
+---
+
+### Safe User I/O Ranges
 To avoid bus contention and collision with standard internal hardware or recognized expansion cards, custom user-designed peripherals must restrict their I/O addresses to the following blocks:
 * `&F8E0` – `&F8FE`
 * `&F9E0` – `&F9FF`

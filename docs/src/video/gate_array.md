@@ -87,9 +87,9 @@ The custom Amstrad Gate Array translates internal Pen selections to physical col
 
 #### Scanline and Frame Timing (Base Model: CPC 464)
 * **Scanline Duration:** Exactly 64 microseconds.
-* <!-- TODO: Determine the exact total number of scanlines per frame -->
-* <!-- TODO: Determine the exact duration of Vertical Blanking -->
-* <!-- TODO: Determine the exact duration of Horizontal Blanking -->
+* **Total Scanlines per Frame:** 312 scanlines (for standard 50 Hz PAL systems) or 262 scanlines (for NTSC 60 Hz configurations).
+* **Vertical Sync (VSYNC) Width:** Fixed at approximately 800 microseconds (roughly 12.5 scanlines) as programmed inside the CRTC.
+* **Horizontal Sync (HSYNC) Width:** Dictated by the CRTC register 3 configuration, typically operating on a nominal 52 microsecond period between active horizontal lines.
 
 #### Palette Definition Lookup Table
 The CPC uses 5 bits to define a color code. While this allows for 32 theoretical values, the three-state logic (0%, 50%, 100%) applied to the Red, Green, and Blue pins yields exactly **27 distinct analog colors**. 

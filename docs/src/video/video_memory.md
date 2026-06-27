@@ -25,6 +25,12 @@ Character Row 1:
   Line 4: &E050 | Line 5: &E850 | Line 6: &F050 | Line 7: &F850
 ```
 
+#### Screen Memory Scaling by Character Cells
+To maintain consistent RAM requirements and coordinate with the CRTC, the default display buffer occupies exactly **16,000 bytes** of memory (rounded up to the active 16 KB segment) regardless of the screen mode. This sizing scales directly with character cell widths:
+* **Mode 0**: $20 \times 25$ character rows, where each character cell spans 32 bytes ($20 \times 25 \times 32 = 16,000$ bytes).
+* **Mode 1**: $40 \times 25$ character rows, where each character cell spans 16 bytes ($40 \times 25 \times 16 = 16,000$ bytes).
+* **Mode 2**: $80 \times 25$ character rows, where each character cell spans 8 bytes ($80 \times 25 \times 8 = 16,000$ bytes).
+
 #### Hardware Scrolling and Wrap-Around
 Modifying the screen offset shifts all row address calculations. The calculation must account for the following offset parameters:
 * **Scroll Left:** Add `+&02` to the offset register per unit shift.
@@ -76,4 +82,3 @@ Defines the depth of the active display buffer page:
 
 ##### 3. Screen Offset (Bits 9–0)
 Specifies the starting memory offset inside the selected bank. This offset value is added directly to screen line addresses, modulo `&0800`.
-

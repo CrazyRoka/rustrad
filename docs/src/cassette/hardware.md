@@ -58,3 +58,24 @@ As each block header is parsed and verified against its 8-bit XOR checksum, the 
 * **`'`** = Protected Binary file.
 
 *Emulator Debugging Note:* If a read error or checksum failure occurs, the OS prints `Read error a` or `Read error b` instead of `Ok`. This can be used to isolate timing or parity bugs in your cassette edge-detection logic.
+
+---
+
+### AMSDOS Cassette File Header Structure
+
+Files on Amstrad cassette tape are written in logical blocks of up to 2048 bytes. Each block consists of up to eight independent 256-byte data segments. To ensure the operating system can identify and read blocks successfully, a **64-byte Header** block is saved immediately preceding the payload of each 2048-byte block.
+
+The internal 64-byte layout of this AMSDOS header is specified as follows:
+
+| Byte Range | Type / Label | Technical Description |
+| :---: | :--- | :--- |
+| **0–15** | `ASCII` | **File Name**: Standard filename. If shorter than 16 characters, padded with null bytes (`00h`). |
+| **16** | `u8` | **Block Number**: The current sequential block number within the file (starts at 1). |
+| **17** | `u8` | **EOF Flag**: Set to a non-zero value if this block is the final block of the file. |
+| **18** | `u8` | **File Type Flag**: Bit-defined flag: <br> - `00h` = Unprotected BASIC <br> - `01h` = Binary file <br> - `02h` = Protected BASIC <br> - `03h` = ASCII text file |
+| **19–20** | `u16 (LE)` | **Data Length**: Length of the file payload stored in this block. Holds `&0800` (2048) if the block is fully written. |
+| **21–22** | `u16 (LE)` | **Loading Address**: Memory target for loading. Default is `&0170` (368) for BASIC programs. |
+| **23** | `u8` | **First Block Flag**: Set to a non-zero value if this block is the starting block of the file. |
+| **24–25** | `u16 (LE)` | **File Length**: The total size of the file in bytes. |
+| **26–27** | `u16 (LE)` | **Execution Address**: Optional entry/start address for binary files (enabling auto-start operations). |
+| **28–63** | `Bytes` | **User Workspace**: Omitted or unused by the AMSDOS tape operating system (available for custom loaders). |
