@@ -31,8 +31,8 @@ The AY-3-8912 is packaged as a 28-pin IC. Unlike its sister chip, the AY-3-8910 
 #### The PSG-PPI Bus Protocol
 The PSG multiplexes its address selection and data transfers over the same 8-bit bidirectional data lines (`DA0`–`DA7`). This bus state is driven by the logic combinations of control pins `BDIR`, `BC1`, and `BC2`.
 
-In the Amstrad CPC architecture:
-* **`BC2` and `A8`** are hardwired directly to the system's `+5V` line (permanently active high `1`).
+By design, the PSG decodes active addressing using internal chip-select logic requiring the active-low address line `\A9` to be `0` (internally tied on the 28-pin AY-3-8912) and active-high address line `A8` to be `1`. In the Amstrad CPC architecture:
+* **`BC2` and `A8`** are hardwired directly to the system's `+5V` line (permanently active high `1`). Tying `BC2` high takes advantage of bus control decoding redundancies, simplifying active CPU management of the PSG down to just two signal lines.
 * **`BDIR`** is tied to **PPI Port C Bit 7**.
 * **`BC1`** is tied to **PPI Port C Bit 6**.
 
@@ -48,6 +48,9 @@ This simplifies PSG bus function selection to the following truth table:
 #### The "Inactive" Bus Transition Rule
 To prevent data bus collisions and accidental register corruption, software must transition the PSG through the **Inactive state (`00`)** between functions (e.g., moving from *Select Register* to *Write Register*).
 * **ASIC Emulation Note:** Standard CPC systems are occasionally forgiving of omitted inactive cycles, but the CPC+ ASIC integration is strictly intolerant. If the transition through state `00` is missing, subsequent write commands are ignored or corrupt the selected register index on CPC+ hardware.
+
+#### Register Address Latch Durability
+Once a register index (0–15) has been decoded and held in the internal Address Latch, it remains active indefinitely. The CPU can execute successive write or read operations to the currently selected register without performing redundant address-latching phases.
 
 ---
 
@@ -80,7 +83,6 @@ The PSG has 16 internal registers (Registers 0–15). Because the internal hardw
 
 #### 1. Tone Period Generators (Registers 0–5)
 Channels A, B, and C output analog square-wave tones. Each channel uses a fine-tune (8-bit) and coarse-tune (4-bit) register pair to form a 12-bit divisor value (0 to 4095).
-
 
 ```
 12-Bit Programmed Divisor:
@@ -172,7 +174,8 @@ Each port contains an internal, un-masked **Output Latch Register** that stores 
 * **Write Behavior:** The written byte is saved in the internal Output Latch Register (unaltered). The physical pins remain high-impedance.
 * **Read Behavior:** The internal Output Latch is bypassed. The PSG returns **only** the unlatched, real-time logic levels present on the physical port pins.
 * *CPC Hardware Specifics:*
-  * **Port A (Reg 14):** Connected to the keyboard matrix. Under default input configuration, reading Reg 14 yields the active column state byte.
+  * **On-Chip Pull-up Resistors:** All physical I/O Port A pins are provided with internal on-chip pull-up resistors. When configured as inputs, any pin that is left unconnected, open, or un-driven by external hardware will natively read back as high (`1`).
+  * **Port A (Reg 14):** Connected to the keyboard matrix. Under default input configuration, reading Reg 14 yields the active column state byte. (Closed switches/pressed keys ground the input line, reading `0`, while open switches read `1` due to the internal pull-up).
   * **Port B (Reg 15):** The AY-3-8912 package has no external pins for Port B. Therefore, reading Register 15 in input mode **must always return `&FF`**.
 
 #### 2. Output Mode Configuration (Register 7 Direction Bit = 1)
@@ -183,6 +186,9 @@ Each port contains an internal, un-masked **Output Latch Register** that stores 
   ```
 * *CPC Hardware Specifics:*
   * **Port A Warning:** If Port A is reprogrammed to Output mode, its internal latch states are forced onto the keyboard matrix. This conflicts with the column scanner, causing the keyboard to freeze and become entirely unresponsive.
+
+#### Hardware `/RESET` Pin Behavior (Pin 16)
+When the active-low physical `/RESET` pin of the PSG is held low (`0`) during a hardware system reset (which requires at least 500 ns during normal operation, or 50 μs on initial power-up), the chip clears all 16 internal registers to `0`. This action completely silences all audio channels, sets the output amplitudes to zero, and disables all tone and noise generation.
 
 ---
 
