@@ -102,6 +102,7 @@ The Gate Array generates a composite sync signal (C-SYNC) for the monitor by com
   * `V26` increments on every HSYNC end.
   * C-VSYNC monitor signal goes active when `V26 = 2` and inactive when `V26 = 6`.
   * Black border enforcement stops when `V26 = 26`.
+* You can find more details [here](crtc_counters.md#gate-array-side-h06-and-v26).
 
 #### Palette Definition Lookup Table
 The CPC uses 5 bits to define a color code. While this allows for 32 theoretical values, the three-state logic (0%, 50%, 100%) applied to the Red, Green, and Blue pins yields exactly **27 distinct analog colors**. 

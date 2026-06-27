@@ -143,7 +143,12 @@ On **Type 0 and Type 2**, no physical status register exists. Reading `&BE00` yi
 #### R0 - Horizontal Total
 * **Function:** Programs the total number of horizontal character times per scanline, including the horizontal retrace period.
 * **Calculation:** `R0_Value = M - 1` (where M is the target period in character clocks).
-* **Type 0 Quirk:** If `R0` is set to `0` or `1`, the CRTC fails to perform internal housekeeping operations that normally occur when `C0` reaches `2`. On Type 0, setting `R0=0` freezes the `C9` (raster) counter indefinitely until `R0` is increased above `1`. Type 1, 2, 3, and 4 handle `R0=0` gracefully without freezing other counters.
+* **Type 0 Quirk (R0 < 2):** Type 0 performs internal housekeeping on
+  `C0 = 0, 1, 2`. If `R0` is set to 0 or 1, these housekeeping cycles are
+  skipped, with cascading effects: C9 freezes, AdjMgmt cannot be cancelled,
+  VSYNC can be permanently blocked for a given `C4==R7` value. See
+  [CRTC Internal Counters](crtc_counters.md#c0--horizontal-character-counter)
+  for the full state machine.
 
 #### R1 - Horizontal Displayed
 * **Function:** Programs the active, visible character columns rendered per scanline. Must be strictly less than the programmed value in `R0`.
@@ -169,9 +174,15 @@ Determines horizontal and vertical sync widths.
 
 #### R5 - Vertical Total Adjust
 * **Function:** Programs an additional number of fractional scanlines (0–31) to fine-tune the vertical frame sync rate (e.g., matching 50 Hz/60 Hz precisely).
-* **Hardware Implementation Delays:**
-  * **Type 0 / 3 / 4:** No dedicated internal `C5` counter exists. The `C9` raster counter is compared directly against the programmed `R5` value during the adjustment phase.
-  * **Type 1 / 2:** Possesses a dedicated physical `C5` adjustment counter.
+* **Hardware Implementation:**
+  * **Type 0 / 3 / 4:** No dedicated `C5` counter. `C9` is compared directly
+    against `R5` during adjustment. On Type 0, `C4` increments exactly once
+    during adjustment; on Type 3/4, `C4` does not increment at all.
+  * **Type 1 / 2:** Possesses a dedicated `C5` counter. `C4` increments each
+    time `C9==R9` during adjustment, ignoring `R4`.
+  * See [CRTC Internal Counters](crtc_counters.md#c5--vertical-adjust-counter-type-1-2-only)
+    for the full adjustment state machine, including the Type 1 `R5=0` bug
+    that enables RFD.
 * **Type 0 Update Limit:** `R5` updates are only considered if written when `C0 < 3` on the last line of the frame.
 
 #### R6 - Vertical Displayed
@@ -198,7 +209,9 @@ Determines horizontal and vertical sync widths.
   * **Non-Interlaced or Interlace Sync Mode:** `R9_Value = RN - 1` (where RN is the character row height).
   * **Interlace Sync & Video Mode (Type 0 / 3 / 4):** `R9_Value = RN - 2`.
   * **Interlace Sync & Video Mode (Type 1 / 2):** `R9_Value = RN - 1`.
-* **Type 3 & 4 Reset Logic:** If `R9` is updated with a value lower than the current `C9` counter, `C9` immediately resets to `0` on the next line. This differs from Type 0, 1, and 2 which will let `C9` overflow to 31 before resetting.
+* **Type 3 & 4 Reset Logic:** Writing `R9 < C9` immediately resets `C9 ← 0`
+  on the next line (no 31-overflow loop). This is a *comparison* test, not
+  equality. See [CRTC Internal Counters](crtc_counters.md#c9--rasterscanline-counter).
 
 #### R10 - Cursor Start Raster
 * **Bits [4..0]:** Starting scanline within the character row for cursor rendering.

@@ -92,6 +92,13 @@ The CRTC maintains two internal video pointers: `VMA` (the active display pointe
 * **Type 1:** `VMA` is loaded with `R12/R13` whenever `C4 = 0` and `C0 = 0`, regardless of `C9`. This allows software to change the screen offset on *any* scanline within the first character row (`C4=0`) without requiring complex raster splits.
 * **Type 2:** `VMA'` is loaded with `R12/R13` on the last line of the frame when `C0` reaches `R1`. `VMA` is then loaded from `VMA'` at the start of the next line (`C0 = 0`). If `R12/R13` is modified after `C0` exceeds `R1` on the last line, the change is ignored until the next frame.
 
+> **Note:** The rules above are simplified. Type 1 has a unique behavior where
+> `VMA ← R12/R13` directly (not via VMA') whenever `C4==0`, on every line of
+> the first character row. Type 2 has a partial-logic bug when `R1=0` on the
+> last line. See [CRTC Internal Counters](crtc_counters.md#vma--vma--video-memory-address-pointers)
+> for full detail.
+
+
 ---
 
 ### Overscan Bits and Video Pointer Counter Carry
