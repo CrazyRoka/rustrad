@@ -60,7 +60,7 @@ impl Keyboard {
                 continue;
             }
 
-            for neighbour_row in 0..8 {
+            for neighbour_row in 0..10 {
                 if neighbour_row == row {
                     continue;
                 }
@@ -117,7 +117,7 @@ mod tests {
         let keyboard = Keyboard::new();
 
         // On CPC, unpressed keys return all 1s
-        for row in 0..8 {
+        for row in 0..10 {
             let row_value = keyboard.read_row(row);
             assert_eq!(
                 row_value, 0xFF,
@@ -307,7 +307,7 @@ mod tests {
 
         keyboard.reset();
 
-        for row in 0..8 {
+        for row in 0..10 {
             assert_eq!(keyboard.read_row(row), 0xFF);
         }
     }
@@ -318,7 +318,7 @@ mod tests {
 
         keyboard.reset();
 
-        for row in 0..8 {
+        for row in 0..10 {
             assert_eq!(keyboard.read_row(row), 0xFF);
         }
     }
@@ -370,7 +370,7 @@ mod tests {
             keyboard.release_key(&key);
         }
 
-        for row in 0..8 {
+        for row in 0..10 {
             assert_eq!(keyboard.read_row(row), 0xFF);
         }
     }

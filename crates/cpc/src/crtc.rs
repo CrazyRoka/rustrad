@@ -237,7 +237,7 @@ impl Crtc {
                 {
                     16
                 }
-                _ => (self.register(3) & 0x0F),
+                _ => self.register(3) & 0x0F,
             };
             if self.c3l == width + 1 {
                 self.c3l = 0;

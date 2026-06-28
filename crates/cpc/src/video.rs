@@ -29,7 +29,7 @@ impl Video {
         let char_y = crtc.c4() as usize;
         let pixel_y = char_y * (crtc.register(9) as usize + 1) + crtc.c9() as usize;
 
-        if pixel_y >= WINDOW_HEIGHT || pixel_x + 8 > WINDOW_WIDTH {
+        if pixel_y >= WINDOW_HEIGHT || pixel_x + 16 > WINDOW_WIDTH {
             return;
         }
 

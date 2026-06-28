@@ -5,9 +5,9 @@ use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 use z80::Z80;
 
 // TODO: Adjust these values
-const CYCLES_PER_LINE: u64 = 256;
+const TICKS_PER_LINE: u64 = 64;
 const LINES_PER_FRAME: u64 = 312;
-const CYCLES_PER_FRAME: u64 = CYCLES_PER_LINE * LINES_PER_FRAME;
+const TICKS_PER_FRAME: u64 = TICKS_PER_LINE * LINES_PER_FRAME;
 
 const ROM_BYTES_464_MODEL: &[u8] = include_bytes!("../../../roms/cpc464.rom");
 
@@ -34,6 +34,7 @@ fn main() {
     // let mut unlimited_fps = false;
     let mut last_fps_update = Instant::now();
     let mut frame_count = 0;
+    let mut ticks_count = 0;
 
     while window.is_open() {
         bus.ppi_mut().keyboard_mut().reset();
@@ -46,19 +47,17 @@ fn main() {
         loop {
             let cycles = cpu.execute(&mut bus);
             let ticks = (cycles + 3) / 4;
+            ticks_count += ticks;
 
-            let mut should_exit = false;
             for _ in 0..ticks {
                 bus.tick();
                 if bus.gate_array_mut().interrupt_requested() {
                     cpu.request_int(0xFF);
                 }
-                if bus.crtc().c0() == 0 && bus.crtc().c4() == 0 && bus.crtc().c9() == 0 {
-                    should_exit = true;
-                }
             }
 
-            if should_exit {
+            if ticks_count >= TICKS_PER_FRAME {
+                ticks_count -= TICKS_PER_FRAME;
                 break;
             }
         }
