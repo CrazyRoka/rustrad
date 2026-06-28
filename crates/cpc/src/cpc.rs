@@ -1,4 +1,4 @@
-use crate::{GateArray, Ppi, memory::CpcMemory};
+use crate::{Crtc, GateArray, Ppi, memory::CpcMemory};
 use z80::Bus;
 
 pub struct Cpc {
@@ -7,10 +7,11 @@ pub struct Cpc {
     // Peripherals
     gate_array: GateArray,
     ppi: Ppi,
+    crtc: Crtc,
 }
 
 impl Cpc {
-    pub fn new(memory: CpcMemory, rom: &[u8], gate_array: GateArray, ppi: Ppi) -> Self {
+    pub fn new(memory: CpcMemory, rom: &[u8]) -> Self {
         assert_eq!(rom.len(), 0x8000, "ROM length is supposed to be 32KB");
         let mut rom_clone = [0; 0x8000];
         rom_clone.copy_from_slice(rom);
@@ -18,8 +19,9 @@ impl Cpc {
         Self {
             rom: rom_clone,
             memory,
-            gate_array,
-            ppi,
+            gate_array: GateArray::new(),
+            ppi: Ppi::new(),
+            crtc: Crtc::new(),
         }
     }
 
@@ -33,6 +35,35 @@ impl Cpc {
 
     pub fn ppi_mut(&mut self) -> &mut Ppi {
         &mut self.ppi
+    }
+
+    pub fn crtc(&self) -> &Crtc {
+        &self.crtc
+    }
+
+    pub fn crtc_mut(&mut self) -> &mut Crtc {
+        &mut self.crtc
+    }
+
+    // Advances the video subsystem by exactly one CRTC character clock (one cycle).
+    // Per cycle:
+    //   1. Tick CRTC once.
+    //   2. If hsync was high and is now low (falling edge), call `gate_array.hsync()`.
+    //   3. Set `gate_array.set_vsync(crtc.vsync())`.
+    //   4. Set `ppi.set_vsync(crtc.vsync())`.
+    pub fn tick(&mut self) {
+        let hsync_prev = self.crtc.hsync();
+        self.crtc.tick();
+        if hsync_prev && !self.crtc.hsync() {
+            self.gate_array.hsync();
+        }
+        self.gate_array.set_vsync(self.crtc.vsync());
+        self.ppi.set_vsync(self.crtc.vsync());
+    }
+
+    /// Reads raw RAM, bypassing ROM mapping. This is how the GA accesses memory.
+    pub fn read_ram(&self, addr: u16) -> u8 {
+        self.memory.read(addr)
     }
 }
 
@@ -53,6 +84,7 @@ impl Bus for Cpc {
 
     fn port_read(&self, port: u16) -> u8 {
         match port >> 8 {
+            0xBC..=0xBF => self.crtc.read(port),
             0xF4..=0xF7 => self.ppi.read(port),
             _ => todo!("Unexpected port read at address {:#04X}", port),
         }
@@ -61,7 +93,8 @@ impl Bus for Cpc {
     fn port_write(&mut self, port: u16, value: u8) {
         match port >> 8 {
             // TODO: handle
-            0xEF | 0xBC | 0xBD | 0xDF | 0xF8 => {}
+            0xEF | 0xDF | 0xF8 => {}
+            0xBC..=0xBF => self.crtc.write(port, value),
             0xF4..=0xF7 => self.ppi.write(port, value),
             0x7F => self.gate_array.write(port, value),
             _ => todo!(
@@ -79,6 +112,8 @@ impl Bus for Cpc {
 
 #[cfg(test)]
 mod tests {
+    use crate::ScreenMode;
+
     use super::*;
 
     // Helper to generate a dummy 32KB ROM structure
@@ -98,10 +133,16 @@ mod tests {
     fn create_cpc() -> Cpc {
         let memory = CpcMemory::new_64k();
         let rom = create_test_rom();
-        let ppi = Ppi::new();
-        let gate_array = GateArray::new();
 
-        Cpc::new(memory, &rom, gate_array, ppi)
+        Cpc::new(memory, &rom)
+    }
+
+    /// Advance the CPC by exactly one full CRTC scanline worth of cycles
+    /// (i.e. `R0 + 1` calls to `tick()`).
+    fn tick_one_scanline(cpc: &mut Cpc) {
+        for _ in 0..=cpc.crtc().register(0) {
+            cpc.tick();
+        }
     }
 
     #[test]
@@ -169,5 +210,185 @@ mod tests {
         cpc.port_write(0x7F00, 0x80);
         assert_eq!(cpc.read(0x1000), 0x11); // Should see Lower ROM
         assert_eq!(cpc.read(0xD000), 0x22); // Should see Upper ROM
+    }
+
+    #[test]
+    fn crtc_port_select_register_routed() {
+        let mut cpc = create_cpc();
+        cpc.port_write(0xBC00, 12);
+        assert_eq!(cpc.crtc().selected_register(), 12);
+        // Low byte of port is don't-care
+        cpc.port_write(0xBCFF, 7);
+        assert_eq!(cpc.crtc().selected_register(), 7);
+    }
+
+    #[test]
+    fn crtc_port_data_write_routed() {
+        let mut cpc = create_cpc();
+        cpc.port_write(0xBC00, 12); // R12 is readable on Type 0
+        cpc.port_write(0xBD00, 0x30);
+        cpc.port_write(0xBC00, 12);
+        assert_eq!(cpc.port_read(0xBF00), 0x30);
+    }
+
+    #[test]
+    fn crtc_port_data_write_low_byte_dont_care() {
+        let mut cpc = create_cpc();
+        cpc.port_write(0xBC00, 12);
+        cpc.port_write(0xBDAA, 0x21);
+        cpc.port_write(0xBC00, 12);
+        assert_eq!(cpc.port_read(0xBF00), 0x21);
+    }
+
+    #[test]
+    fn crtc_write_does_not_leak_into_gate_array() {
+        let mut cpc = create_cpc();
+        cpc.port_write(0xBC00, 0);
+        cpc.port_write(0xBD00, 0x82);
+        assert_eq!(cpc.gate_array().mode(), ScreenMode::Mode1);
+    }
+
+    #[test]
+    fn ga_write_does_not_leak_into_crtc() {
+        let mut cpc = create_cpc();
+        cpc.port_write(0x7F00, 0x82); // GA mode 2
+        cpc.port_write(0xBC00, 12);
+        assert_eq!(cpc.port_read(0xBF00), 0); // R12 untouched
+        assert_eq!(cpc.gate_array().mode(), ScreenMode::Mode2);
+    }
+
+    fn setup_small_frame_via_ports(cpc: &mut Cpc) {
+        // Same setup as crtc::tests::setup_small_frame, but through the bus
+        let regs: [(u8, u8); 10] = [
+            (0, 4),
+            (1, 2),
+            (2, 3),
+            (3, 0x12),
+            (4, 2),
+            (5, 0),
+            (6, 1),
+            (7, 1),
+            (8, 0),
+            (9, 1),
+        ];
+        for (reg, val) in regs {
+            cpc.port_write(0xBC00, reg);
+            cpc.port_write(0xBD00, val);
+        }
+        cpc.port_write(0xBC00, 12);
+        cpc.port_write(0xBD00, 0);
+        cpc.port_write(0xBC00, 13);
+        cpc.port_write(0xBD00, 0);
+    }
+
+    #[test]
+    fn tick_advances_crtc_by_one_character() {
+        let mut cpc = create_cpc();
+        setup_small_frame_via_ports(&mut cpc); // R0=4 → 5 chars per line
+        assert_eq!(cpc.crtc().c0(), 0);
+        cpc.tick();
+        assert_eq!(cpc.crtc().c0(), 1);
+    }
+
+    #[test]
+    fn tick_advances_crtc_one_line() {
+        let mut cpc = create_cpc();
+        setup_small_frame_via_ports(&mut cpc); // R0=4 → 5 chars per line
+        assert_eq!(cpc.crtc().c0(), 0);
+        tick_one_scanline(&mut cpc);
+        assert_eq!(cpc.crtc().c0(), 0); // wrapped
+        assert_eq!(cpc.crtc().c9(), 1); // advanced one scanline within the char row
+    }
+
+    #[test]
+    fn tick_propagates_one_hsync_to_gate_array() {
+        let mut cpc = create_cpc();
+        setup_small_frame_via_ports(&mut cpc);
+        // Run exactly 52 scanlines — GA should fire interrupt on the 52nd HSYNC.
+        for _ in 0..51 {
+            tick_one_scanline(&mut cpc);
+            assert!(
+                !cpc.gate_array().interrupt_requested(),
+                "No interrupt expected before 52 HSYNCs"
+            );
+        }
+        tick_one_scanline(&mut cpc);
+        assert!(
+            cpc.gate_array().interrupt_requested(),
+            "GA interrupt must fire after 52 HSYNC falling edges propagated from CRTC"
+        );
+    }
+
+    #[test]
+    fn tick_propagates_vsync_to_gate_array() {
+        let mut cpc = create_cpc();
+        setup_small_frame_via_ports(&mut cpc); // VSYNC at C4=1, C9=0 → after 2 scanlines
+        assert_eq!(cpc.gate_array().vsync(), false);
+        tick_one_scanline(&mut cpc);
+        assert_eq!(cpc.gate_array().vsync(), false);
+        tick_one_scanline(&mut cpc);
+        assert_eq!(cpc.gate_array().vsync(), true);
+    }
+
+    #[test]
+    fn tick_propagates_vsync_to_ppi_port_b_bit0() {
+        let mut cpc = create_cpc();
+        setup_small_frame_via_ports(&mut cpc);
+        // Before VSYNC: bit 0 should be 0
+        assert_eq!(
+            cpc.port_read(0xF500) & 0x01,
+            0,
+            "PPI Port B bit 0 should be 0 when CRTC VSYNC inactive"
+        );
+
+        // Run 2 scanlines to reach C4=1, C9=0 (VSYNC starts)
+        tick_one_scanline(&mut cpc);
+        tick_one_scanline(&mut cpc);
+        assert_eq!(cpc.gate_array().vsync(), true);
+
+        assert_ne!(
+            cpc.port_read(0xF500) & 0x01,
+            0,
+            "PPI Port B bit 0 must follow CRTC VSYNC (high during VSYNC)"
+        );
+
+        // After VSYNC width (1 scanline in this setup), it should go low again
+        tick_one_scanline(&mut cpc);
+        assert_eq!(
+            cpc.port_read(0xF500) & 0x01,
+            0,
+            "PPI Port B bit 0 should drop when CRTC VSYNC ends"
+        );
+    }
+
+    #[test]
+    fn tick_does_not_double_fire_ga_hsync() {
+        // Each scanline must produce exactly one GA.hsync() call.
+        // Verify by counting scanlines needed to fire interrupt: must be 52, not fewer.
+        let mut cpc = create_cpc();
+        setup_small_frame_via_ports(&mut cpc);
+        for _ in 0..51 {
+            tick_one_scanline(&mut cpc);
+            assert!(!cpc.gate_array().interrupt_requested());
+        }
+    }
+
+    #[test]
+    fn read_ram_bypasses_upper_rom() {
+        let mut cpc = create_cpc();
+        // Upper ROM is enabled by default — bus.read(0xC000) returns ROM
+        assert_eq!(cpc.read(0xC000), 0x22); // ROM byte
+        // Write to RAM at 0xC000
+        cpc.write(0xC000, 0x99);
+        // read_ram should return the RAM value, not ROM
+        assert_eq!(cpc.read_ram(0xC000), 0x99);
+    }
+
+    #[test]
+    fn read_ram_bypasses_lower_rom() {
+        let mut cpc = create_cpc();
+        assert_eq!(cpc.read(0x1000), 0x11); // Lower ROM
+        cpc.write(0x1000, 0x77);
+        assert_eq!(cpc.read_ram(0x1000), 0x77);
     }
 }

@@ -282,6 +282,10 @@ impl GateArray {
             self.vsync_counter = 0;
         }
     }
+
+    pub fn vsync(&self) -> bool {
+        self.vsync
+    }
 }
 
 #[cfg(test)]

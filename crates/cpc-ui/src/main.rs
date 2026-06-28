@@ -13,9 +13,7 @@ const ROM_BYTES_464_MODEL: &[u8] = include_bytes!("../../../roms/cpc464.rom");
 
 fn main() {
     let memory = CpcMemory::new_64k();
-    let ppi = Ppi::new();
-    let gate_array = GateArray::new();
-    let mut bus = Cpc::new(memory, ROM_BYTES_464_MODEL, gate_array, ppi);
+    let mut bus = Cpc::new(memory, ROM_BYTES_464_MODEL);
     let mut cpu = Z80::new();
     let video = Video::new();
 

@@ -185,6 +185,10 @@ impl Ppi {
             (true, true) => PsgBusFunction::SelectRegister,
         }
     }
+
+    pub fn set_vsync(&mut self, vsync: bool) {
+        self.vsync_active = vsync;
+    }
 }
 
 #[cfg(test)]

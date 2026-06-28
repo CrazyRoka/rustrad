@@ -98,7 +98,7 @@ impl Crtc {
     /// Returns the currently selected register index (internal Address Register).
     /// On Type 0/1/2 this is 5 bits (0–31).
     /// On Type 3/4 this is 3 bits (0–7).
-    fn selected_register(&self) -> u8 {
+    pub fn selected_register(&self) -> u8 {
         match self.crtc_type {
             CrtcType::Type0 | CrtcType::Type1 | CrtcType::Type2 => self.selected_register & 0b11111,
             CrtcType::Type3 | CrtcType::Type4 => self.selected_register & 0b111,
@@ -168,7 +168,7 @@ impl Crtc {
     /// Returns the raw value stored in the internal register at `idx` (0–31).
     /// This bypasses read-port masking / readability rules and returns the
     /// full 8-bit latch value as written.
-    fn register(&self, idx: u8) -> u8 {
+    pub fn register(&self, idx: u8) -> u8 {
         match idx {
             0x00..=0x31 => self.registers[idx as usize],
             _ => panic!("Unexpected register {idx:#02X} selected"),
@@ -272,24 +272,24 @@ impl Crtc {
             self.vma = self.vma_prime;
         } else {
             self.vma += 1;
-            if self.c0 == self.register(1) {
+            if self.c0 == self.register(1) && self.c9 == self.register(9) {
                 self.vma_prime = self.vma;
             }
         }
     }
 
     /// Returns the current HSYNC output pin state (active high).
-    fn hsync(&self) -> bool {
+    pub fn hsync(&self) -> bool {
         self.c3l != 0
     }
 
     /// Returns the current VSYNC output pin state (active high).
-    fn vsync(&self) -> bool {
+    pub fn vsync(&self) -> bool {
         self.c3h != 0
     }
 
     /// Returns the current Display Enable output state.
-    fn dispen(&self) -> bool {
+    pub fn dispen(&self) -> bool {
         if ((self.register(8) >> 4) & 0b11) == 0b11 {
             return false;
         }
@@ -298,7 +298,7 @@ impl Crtc {
     }
 
     /// Returns the current Cursor output state.
-    fn cursor(&self) -> bool {
+    pub fn cursor(&self) -> bool {
         if self.register(1) == 0 {
             return false;
         }
@@ -318,55 +318,55 @@ impl Crtc {
     }
 
     /// Returns the current 14-bit memory address (MA) being output.
-    fn current_ma(&self) -> u16 {
+    pub fn current_ma(&self) -> u16 {
         self.vma
     }
 
     /// Returns the current raster address output (RA0–RA4).
-    fn current_raster(&self) -> u8 {
+    pub fn current_raster(&self) -> u8 {
         self.c9
     }
 
     /// Returns the horizontal character counter (C0).
-    fn c0(&self) -> u8 {
+    pub fn c0(&self) -> u8 {
         self.c0
     }
 
     /// Returns the vertical character row counter (C4).
-    fn c4(&self) -> u8 {
+    pub fn c4(&self) -> u8 {
         self.c4
     }
 
     /// Returns the raster counter (C9).
-    fn c9(&self) -> u8 {
+    pub fn c9(&self) -> u8 {
         self.c9
     }
 
     /// Returns the vertical total adjust counter (C5).
     /// Only meaningful on Type 1/2 which have a dedicated C5 counter.
-    fn c5(&self) -> u8 {
+    pub fn c5(&self) -> u8 {
         self.c5
     }
 
     /// HSC (Horizontal Sync Counter)
     /// Counts µs inside an HSYNC pulse.
-    fn c3l(&self) -> u8 {
+    pub fn c3l(&self) -> u8 {
         self.c3l
     }
 
     /// VSC (Vertical Sync Counter)
     /// Counts lines inside a VSYNC pulse.
-    fn c3h(&self) -> u8 {
+    pub fn c3h(&self) -> u8 {
         self.c3h
     }
 
     /// Returns the current VMA (active display memory pointer).
-    fn vma(&self) -> u16 {
+    pub fn vma(&self) -> u16 {
         self.vma
     }
 
     /// Returns the current VMA' (line-start memory pointer).
-    fn vma_prime(&self) -> u16 {
+    pub fn vma_prime(&self) -> u16 {
         self.vma_prime
     }
 
@@ -387,6 +387,14 @@ impl Crtc {
     /// Clears all internal registers, counters, and output pins.
     fn reset(&mut self) {
         *self = Self::new_with_type(self.crtc_type)
+    }
+
+    pub fn phys_address(&self) -> u16 {
+        Self::phys_address_for(self.current_ma(), self.current_raster())
+    }
+
+    pub fn phys_address_for(ma: u16, raster: u8) -> u16 {
+        (ma & 0x3FF) << 1 | (((raster as u16) & 0x07) << 11) | ((ma & 0x3000) << 2)
     }
 }
 
@@ -1902,5 +1910,77 @@ mod tests {
         assert_eq!(crtc.c4(), 0);
         assert_eq!(crtc.c9(), 0);
         assert_eq!(crtc.c5(), 0, "Type 0 should not use C5 counter");
+    }
+
+    #[test]
+    fn address_decode_default_page_c000() {
+        // R12=0x30, R13=0x00 → MA starts at 0x3000 → phys 0xC000
+        let mut crtc = Crtc::new();
+        write_register(&mut crtc, 12, 0x30);
+        write_register(&mut crtc, 13, 0x00);
+        assert_eq!(crtc.phys_address(), 0xC000);
+    }
+
+    #[test]
+    fn address_decode_scanline_offset_0x0800() {
+        let mut crtc = Crtc::new();
+        write_register(&mut crtc, 12, 0x30);
+        write_register(&mut crtc, 13, 0x00);
+        assert_eq!(crtc.phys_address(), 0xC000);
+        crtc.c9 = 1;
+        assert_eq!(crtc.phys_address(), 0xC800);
+        crtc.c9 = 2;
+        assert_eq!(crtc.phys_address(), 0xD000);
+        crtc.c9 = 3;
+        assert_eq!(crtc.phys_address(), 0xD800);
+        crtc.c9 = 4;
+        assert_eq!(crtc.phys_address(), 0xE000);
+        crtc.c9 = 5;
+        assert_eq!(crtc.phys_address(), 0xE800);
+        crtc.c9 = 6;
+        assert_eq!(crtc.phys_address(), 0xF000);
+        crtc.c9 = 7;
+        assert_eq!(crtc.phys_address(), 0xF800);
+    }
+
+    #[test]
+    fn phys_address_for_arbitrary_ma_and_raster() {
+        // Standard CPC layout: MA=0x3000, raster=0 → phys 0xC000
+        assert_eq!(Crtc::phys_address_for(0x3000, 0), 0xC000);
+        // Same MA, raster=1 → next scanline block (0x0800 step)
+        assert_eq!(Crtc::phys_address_for(0x3000, 1), 0xC800);
+        assert_eq!(Crtc::phys_address_for(0x3000, 7), 0xF800);
+        // MA=0x3001 → next byte pair (A1 toggles)
+        assert_eq!(Crtc::phys_address_for(0x3001, 0), 0xC002);
+        // Char row 1 start: MA = 0x3000 + 40 = 0x3028
+        assert_eq!(Crtc::phys_address_for(0x3028, 0), 0xC050);
+    }
+
+    #[test]
+    fn vma_prime_only_updates_at_end_of_char_row() {
+        let mut crtc = Crtc::new();
+        // R0=4 (5 CCLKs/line), R1=2 (2 displayed), R9=1 (2 scanlines/row)
+        write_register(&mut crtc, 0, 4);
+        write_register(&mut crtc, 1, 2);
+        write_register(&mut crtc, 4, 2);
+        write_register(&mut crtc, 9, 1);
+        write_register(&mut crtc, 12, 0);
+        write_register(&mut crtc, 13, 0);
+
+        // Tick through one full scanline (5 CCLKs → C0 wraps, C9→1)
+        for _ in 0..5 {
+            crtc.tick();
+        }
+
+        // Now at C4=0, C9=1, C0=0 — start of 2nd scanline, SAME char row.
+        // VMA must still be 0: VMA' must not update until C9==R9.
+        assert_eq!(crtc.c9(), 1);
+        assert_eq!(crtc.c0(), 0);
+        assert_eq!(
+            crtc.current_ma(),
+            0,
+            "VMA at start of 2nd scanline must equal frame start; \
+         VMA' must only update when C9==R9 (end of char row)"
+        );
     }
 }
