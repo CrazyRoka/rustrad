@@ -1,6 +1,6 @@
 use crate::{Cpc, Crtc, GateArray, ScreenMode, memory::MemoryReader};
 
-pub const WINDOW_WIDTH: usize = 320;
+pub const WINDOW_WIDTH: usize = 640;
 pub const WINDOW_HEIGHT: usize = 200;
 
 pub struct Video {
@@ -24,7 +24,7 @@ impl Video {
 
     pub fn tick<R: MemoryReader>(&mut self, crtc: &Crtc, ga: &GateArray, ram: &R) {
         let char_x = crtc.c0() as usize;
-        let pixel_x = char_x * 8;
+        let pixel_x = char_x * 16;
 
         let char_y = crtc.c4() as usize;
         let pixel_y = char_y * (crtc.register(9) as usize + 1) + crtc.c9() as usize;
@@ -35,7 +35,7 @@ impl Video {
 
         let mode = ga.mode();
         let start = pixel_y * WINDOW_WIDTH + pixel_x;
-        let end = start + 8;
+        let end = start + 16;
         let slice = &mut self.buffer[start..end];
 
         if !crtc.dispen() {
@@ -45,24 +45,19 @@ impl Video {
         }
 
         let addr = crtc.phys_address();
-        let byte1 = ram.read_byte(addr);
-        let byte1_pens = mode.decode_byte(byte1);
-        let byte2 = ram.read_byte(addr + 1);
-        let byte2_pens = mode.decode_byte(byte2);
+        for byte_idx in 0..2 {
+            let byte = ram.read_byte(addr + byte_idx as u16);
+            let byte_pens = mode.decode_byte(byte);
 
-        let pixels = byte1_pens
-            .iter()
-            .filter(|x| **x != 0xFF)
-            .chain(byte2_pens.iter().filter(|x| **x != 0xFF));
-        for (buf, pixel) in slice.iter_mut().zip(pixels) {
-            *buf = ga.ink_for_pen(*pixel).color();
+            for (idx, pen) in byte_pens.iter().enumerate() {
+                slice[byte_idx * 8 + idx] = ga.ink_for_pen(*pen).color();
+            }
         }
     }
 }
 
 impl ScreenMode {
-    /// Decodes bytes for each ScreenMode. Always returns an array of 8 elements to prevent heap allocations.
-    /// Unused values equal to 0xFF
+    /// Decodes bytes for each ScreenMode. Always returns an array of 8 elements.
     #[inline(always)]
     pub fn decode_byte(&self, byte: u8) -> [u8; 8] {
         let mut res = [0xFF; 8];
@@ -72,6 +67,7 @@ impl ScreenMode {
             ScreenMode::Mode2 => 8,
             ScreenMode::Mode3 => 2,
         };
+        let width = 8 / pixels;
         for pixel_idx in 0..pixels {
             let pen = match self {
                 ScreenMode::Mode0 => {
@@ -94,7 +90,9 @@ impl ScreenMode {
                 }
             };
 
-            res[pixel_idx] = pen;
+            for j in 0..width {
+                res[pixel_idx * width + j] = pen;
+            }
         }
 
         res
@@ -110,31 +108,31 @@ mod tests {
     #[test]
     fn mode0_decode_byte_00_yields_pen0_pen0() {
         let pixels = ScreenMode::Mode0.decode_byte(0x00);
-        assert_eq!(pixels, [0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(pixels, [0, 0, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]
     fn mode0_decode_byte_ff_yields_pen15_pen15() {
         let pixels = ScreenMode::Mode0.decode_byte(0xFF);
-        assert_eq!(pixels, [15, 15, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(pixels, [15, 15, 15, 15, 15, 15, 15, 15]);
     }
 
     #[test]
     fn mode0_decode_byte_known_pattern() {
         let pixels = ScreenMode::Mode0.decode_byte(0x77);
-        assert_eq!(pixels, [12, 15, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(pixels, [12, 12, 12, 12, 15, 15, 15, 15]);
     }
 
     #[test]
     fn mode1_decode_byte_yields_4_pixels() {
         let pixels = ScreenMode::Mode1.decode_byte(0xF0);
-        assert_eq!(pixels, [1, 1, 1, 1, 0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(pixels, [1, 1, 1, 1, 1, 1, 1, 1]);
     }
 
     #[test]
     fn mode1_decode_byte_alternating_pattern() {
         let pixels = ScreenMode::Mode1.decode_byte(0xE1);
-        assert_eq!(pixels, [1, 1, 1, 2, 0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(pixels, [1, 1, 1, 1, 1, 1, 2, 2]);
     }
 
     #[test]
@@ -158,7 +156,7 @@ mod tests {
     #[test]
     fn mode3_decode_uses_mode0_layout_capped_to_pen3() {
         let pixels = ScreenMode::Mode3.decode_byte(0xFF);
-        assert_eq!(pixels, [3, 3, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(pixels, [3, 3, 3, 3, 3, 3, 3, 3]);
     }
 
     /// 64 KB scratch RAM for tests, no ROM/Cpu needed.
@@ -208,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_at_origin_writes_exactly_8_pixels_in_mode1() {
+    fn tick_at_origin_writes_exactly_16_pixels() {
         let mut video = Video::new();
         let mut crtc = Crtc::new();
         setup_standard_crtc(&mut crtc);
@@ -220,11 +218,11 @@ mod tests {
         video.tick(&crtc, &ga, &ram);
 
         let white = ga.ink_for_pen(0).color();
-        for x in 0..8 {
+        for x in 0..16 {
             assert_eq!(video.buffer()[x], white, "x={}", x);
         }
         // Pixel 8 must be untouched (proves we wrote exactly 8 px, not more)
-        assert_eq!(video.buffer()[8], 0, "x=8 should be untouched");
+        assert_eq!(video.buffer()[16], 0, "x=16 should be untouched");
     }
 
     #[test]
