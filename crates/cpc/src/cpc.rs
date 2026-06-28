@@ -1,4 +1,4 @@
-use crate::{Crtc, GateArray, Ppi, memory::CpcMemory};
+use crate::{Crtc, GateArray, Ppi, Video, memory::CpcMemory};
 use z80::Bus;
 
 pub struct Cpc {
@@ -8,6 +8,7 @@ pub struct Cpc {
     gate_array: GateArray,
     ppi: Ppi,
     crtc: Crtc,
+    video: Video,
 }
 
 impl Cpc {
@@ -22,6 +23,7 @@ impl Cpc {
             gate_array: GateArray::new(),
             ppi: Ppi::new(),
             crtc: Crtc::new(),
+            video: Video::new(),
         }
     }
 
@@ -45,6 +47,14 @@ impl Cpc {
         &mut self.crtc
     }
 
+    pub fn video(&self) -> &Video {
+        &self.video
+    }
+
+    pub fn video_mut(&mut self) -> &mut Video {
+        &mut self.video
+    }
+
     // Advances the video subsystem by exactly one CRTC character clock (one cycle).
     // Per cycle:
     //   1. Tick CRTC once.
@@ -52,6 +62,7 @@ impl Cpc {
     //   3. Set `gate_array.set_vsync(crtc.vsync())`.
     //   4. Set `ppi.set_vsync(crtc.vsync())`.
     pub fn tick(&mut self) {
+        self.video.tick(&self.crtc, &self.gate_array, &self.memory);
         let hsync_prev = self.crtc.hsync();
         self.crtc.tick();
         if hsync_prev && !self.crtc.hsync() {

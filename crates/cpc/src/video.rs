@@ -1,31 +1,61 @@
-use crate::{Cpc, ScreenMode};
+use crate::{Cpc, Crtc, GateArray, ScreenMode, memory::MemoryReader};
 
 pub const WINDOW_WIDTH: usize = 320;
 pub const WINDOW_HEIGHT: usize = 200;
 
-pub struct Video {}
+pub struct Video {
+    buffer: [u32; WINDOW_HEIGHT * WINDOW_WIDTH],
+}
 
 impl Video {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            buffer: [0; WINDOW_HEIGHT * WINDOW_WIDTH],
+        }
     }
 
-    pub fn render(&self, bus: &Cpc, buffer: &mut [u32]) {
-        for y in 0..200 {
-            let scanline_address = 0xC000 + (y % 8) * 0x0800 + (y / 8) * 80;
-            for x in 0..80 {
-                let byte = bus.read_ram(scanline_address + x);
+    pub fn buffer(&self) -> &[u32] {
+        &self.buffer
+    }
 
-                for (pixel_idx, pen) in bus.gate_array().mode().decode_byte(byte).iter().enumerate()
-                {
-                    if *pen == 0xFF {
-                        break;
-                    }
-                    let color = bus.gate_array().ink_for_pen(*pen);
-                    buffer[y as usize * WINDOW_WIDTH + (x as usize) * 4 + pixel_idx] =
-                        color.color();
-                }
-            }
+    pub fn clear(&mut self) {
+        self.buffer.fill(0);
+    }
+
+    pub fn tick<R: MemoryReader>(&mut self, crtc: &Crtc, ga: &GateArray, ram: &R) {
+        let char_x = crtc.c0() as usize;
+        let pixel_x = char_x * 8;
+
+        let char_y = crtc.c4() as usize;
+        let pixel_y = char_y * (crtc.register(9) as usize + 1) + crtc.c9() as usize;
+
+        if pixel_y >= WINDOW_HEIGHT || pixel_x + 8 > WINDOW_WIDTH {
+            return;
+        }
+
+        let mode = ga.mode();
+        let start = pixel_y * WINDOW_WIDTH + pixel_x;
+        let end = start + 8;
+        let slice = &mut self.buffer[start..end];
+
+        if !crtc.dispen() {
+            let border = ga.ink_for_pen(16);
+            slice.fill(border.color());
+            return;
+        }
+
+        let addr = crtc.phys_address();
+        let byte1 = ram.read_byte(addr);
+        let byte1_pens = mode.decode_byte(byte1);
+        let byte2 = ram.read_byte(addr + 1);
+        let byte2_pens = mode.decode_byte(byte2);
+
+        let pixels = byte1_pens
+            .iter()
+            .filter(|x| **x != 0xFF)
+            .chain(byte2_pens.iter().filter(|x| **x != 0xFF));
+        for (buf, pixel) in slice.iter_mut().zip(pixels) {
+            *buf = ga.ink_for_pen(*pixel).color();
         }
     }
 }
@@ -73,7 +103,9 @@ impl ScreenMode {
 
 #[cfg(test)]
 mod tests {
-    use crate::ScreenMode;
+    use crate::{
+        Crtc, GateArray, ScreenMode, Video, WINDOW_HEIGHT, WINDOW_WIDTH, memory::MemoryReader,
+    };
 
     #[test]
     fn mode0_decode_byte_00_yields_pen0_pen0() {
@@ -126,7 +158,303 @@ mod tests {
     #[test]
     fn mode3_decode_uses_mode0_layout_capped_to_pen3() {
         let pixels = ScreenMode::Mode3.decode_byte(0xFF);
-        assert_eq!(pixels.len(), 2);
-        assert!(pixels.iter().all(|&p| p <= 3), "Mode 3 pens must be 0-3");
+        assert_eq!(pixels, [3, 3, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    /// 64 KB scratch RAM for tests, no ROM/Cpu needed.
+    struct TestRam(Box<[u8; 0x10000]>);
+    impl TestRam {
+        fn new() -> Self {
+            Self(Box::new([0; 0x10000]))
+        }
+        fn set(&mut self, addr: u16, v: u8) {
+            self.0[addr as usize] = v;
+        }
+        fn fill_range(&mut self, start: u16, end: u16, v: u8) {
+            for a in start..end {
+                self.0[a as usize] = v;
+            }
+        }
+    }
+    impl MemoryReader for TestRam {
+        fn read_byte(&self, addr: u16) -> u8 {
+            self.0[addr as usize]
+        }
+    }
+
+    /// Standard CPC 464 mode-1 CRTC setup:
+    /// R0=63, R1=40, R6=25, R9=7, R12/R13 = 0x3000 (phys 0xC000).
+    fn setup_standard_crtc(crtc: &mut Crtc) {
+        for (r, v) in [
+            (0u8, 63u8),
+            (1, 40),
+            (4, 38),
+            (6, 25),
+            (9, 7),
+            (12, 0x30),
+            (13, 0x00),
+            (8, 0),
+        ] {
+            crtc.write(0xBC00, r);
+            crtc.write(0xBD00, v);
+        }
+    }
+
+    #[test]
+    fn new_video_has_blank_buffer() {
+        let v = Video::new();
+        assert_eq!(v.buffer().len(), WINDOW_WIDTH * WINDOW_HEIGHT);
+        assert!(v.buffer().iter().all(|&p| p == 0));
+    }
+
+    #[test]
+    fn tick_at_origin_writes_exactly_8_pixels_in_mode1() {
+        let mut video = Video::new();
+        let mut crtc = Crtc::new();
+        setup_standard_crtc(&mut crtc);
+        let ga = GateArray::new(); // mode 1, pen 0 = White
+        let mut ram = TestRam::new();
+        ram.set(0xC000, 0x00); // mode 1 decodes 0x00 -> [0,0,0,0] -> pen 0
+        ram.set(0xC001, 0x00);
+
+        video.tick(&crtc, &ga, &ram);
+
+        let white = ga.ink_for_pen(0).color();
+        for x in 0..8 {
+            assert_eq!(video.buffer()[x], white, "x={}", x);
+        }
+        // Pixel 8 must be untouched (proves we wrote exactly 8 px, not more)
+        assert_eq!(video.buffer()[8], 0, "x=8 should be untouched");
+    }
+
+    #[test]
+    fn tick_with_dispen_false_writes_border_not_ram_data() {
+        let mut video = Video::new();
+        let mut crtc = Crtc::new();
+        setup_standard_crtc(&mut crtc);
+        crtc.write(0xBC00, 1);
+        crtc.write(0xBD00, 1); // R1=1: only c0=0 has dispen
+
+        // Make border Black; pen 0 stays White. RAM=0x00 would decode
+        // to pen 0 (White) if dispen were true. So if we see Black, the
+        // implementation correctly used the border color, not RAM.
+        let mut ga = GateArray::new();
+        ga.write(0x7F00, 0x10); // select border (pen 16)
+        ga.write(0x7F00, 0x40 | 20); // color 20 = Black
+        let mut ram = TestRam::new();
+        ram.set(0xC000, 0x00);
+        ram.set(0xC001, 0x00);
+
+        crtc.tick(); // c0: 0 -> 1; dispen now false
+
+        video.tick(&crtc, &ga, &ram);
+
+        let black = ga.ink_for_pen(16).color();
+        for x in 8..16 {
+            assert_eq!(video.buffer()[x], black, "x={} should be border", x);
+        }
+        for x in 0..8 {
+            assert_eq!(video.buffer()[x], 0, "x={} should be untouched", x);
+        }
+    }
+
+    #[test]
+    fn tick_outside_buffer_width_does_not_write() {
+        let mut video = Video::new();
+        let mut crtc = Crtc::new();
+        setup_standard_crtc(&mut crtc);
+        for _ in 0..40 {
+            crtc.tick();
+        } // c0=40 -> pixel_x=320 (out)
+        assert_eq!(crtc.c0(), 40);
+
+        let ga = GateArray::new();
+        let ram = TestRam::new();
+        video.tick(&crtc, &ga, &ram);
+
+        assert!(video.buffer().iter().all(|&p| p == 0));
+    }
+
+    #[test]
+    fn tick_outside_buffer_height_does_not_write() {
+        let mut video = Video::new();
+        let mut crtc = Crtc::new();
+        setup_standard_crtc(&mut crtc);
+        // 200 scanlines * 64 chars = 12800 ticks -> pixel_y = 200 (out)
+        for _ in 0..12800 {
+            crtc.tick();
+        }
+
+        let ga = GateArray::new();
+        let ram = TestRam::new();
+        video.tick(&crtc, &ga, &ram);
+
+        assert!(video.buffer().iter().all(|&p| p == 0));
+    }
+
+    #[test]
+    fn forty_ticks_fill_first_scanline_in_mode1() {
+        let mut video = Video::new();
+        let mut crtc = Crtc::new();
+        setup_standard_crtc(&mut crtc);
+        let ga = GateArray::new();
+        let ram = TestRam::new(); // all 0 -> pen 0 (White)
+
+        for _ in 0..40 {
+            video.tick(&crtc, &ga, &ram);
+            crtc.tick();
+        }
+
+        let white = ga.ink_for_pen(0).color();
+        for x in 0..WINDOW_WIDTH {
+            assert_eq!(video.buffer()[x], white, "x={}", x);
+        }
+    }
+
+    #[test]
+    fn non_zero_ram_data_produces_non_white_pixels() {
+        let mut video = Video::new();
+        let mut crtc = Crtc::new();
+        setup_standard_crtc(&mut crtc);
+
+        let mut ga = GateArray::new();
+        ga.write(0x7F00, 0x03); // select pen 3
+        ga.write(0x7F00, 0x40 | 20); // pen 3 = Black
+        // 0xFF in mode 1 decodes to [3,3,3,3]
+
+        let mut ram = TestRam::new();
+        ram.set(0xC000, 0xFF);
+        ram.set(0xC001, 0xFF);
+
+        video.tick(&crtc, &ga, &ram);
+
+        let black = ga.ink_for_pen(3).color();
+        for x in 0..8 {
+            assert_eq!(video.buffer()[x], black, "x={}", x);
+        }
+    }
+
+    #[test]
+    fn scanline_advances_after_full_line() {
+        let mut video = Video::new();
+        let mut crtc = Crtc::new();
+        setup_standard_crtc(&mut crtc); // R0=63 -> 64 chars per line
+
+        let mut ga = GateArray::new();
+        ga.write(0x7F00, 0x03);
+        ga.write(0x7F00, 0x40 | 20); // pen 3 = Black
+
+        let mut ram = TestRam::new();
+        // Scanline 0 phys 0xC000: 0x00 -> pen 0 (White)
+        // Scanline 1 phys 0xC800: 0xFF -> pen 3 (Black)
+        ram.fill_range(0xC000, 0xC050, 0x00);
+        ram.fill_range(0xC800, 0xC850, 0xFF);
+
+        // Complete scanline 0
+        for _ in 0..64 {
+            video.tick(&crtc, &ga, &ram);
+            crtc.tick();
+        }
+        assert_eq!(crtc.c9(), 1);
+        assert_eq!(crtc.c0(), 0);
+
+        // First char of scanline 1
+        video.tick(&crtc, &ga, &ram);
+
+        let black = ga.ink_for_pen(3).color();
+        let white = ga.ink_for_pen(0).color();
+        for x in 0..8 {
+            assert_eq!(
+                video.buffer()[WINDOW_WIDTH + x],
+                black,
+                "scanline 1, x={}",
+                x
+            );
+        }
+        // Scanline 0 untouched (still White from earlier writes)
+        assert_eq!(video.buffer()[0], white);
+    }
+
+    #[test]
+    fn border_color_uses_pen_16_from_palette() {
+        let mut video = Video::new();
+        let mut crtc = Crtc::new();
+        setup_standard_crtc(&mut crtc);
+        crtc.write(0xBC00, 1);
+        crtc.write(0xBD00, 0); // R1=0 -> dispen always false
+
+        let mut ga = GateArray::new();
+        ga.write(0x7F00, 0x10); // select border
+        ga.write(0x7F00, 0x40 | 20); // Black
+
+        let ram = TestRam::new();
+        video.tick(&crtc, &ga, &ram);
+
+        let black = ga.ink_for_pen(16).color();
+        for x in 0..8 {
+            assert_eq!(video.buffer()[x], black, "x={}", x);
+        }
+    }
+
+    #[test]
+    fn r8_border_force_renders_border_in_displayed_area() {
+        let mut video = Video::new();
+        let mut crtc = Crtc::new();
+        setup_standard_crtc(&mut crtc);
+        // R8 bits 5:4 = 11 -> crtc.dispen() returns false (force border)
+        crtc.write(0xBC00, 8);
+        crtc.write(0xBD00, 0x30);
+
+        let mut ga = GateArray::new();
+        ga.write(0x7F00, 0x10);
+        ga.write(0x7F00, 0x40 | 20); // border = Black
+
+        let mut ram = TestRam::new();
+        ram.set(0xC000, 0x00); // would be pen 0 (White) if displayed
+
+        video.tick(&crtc, &ga, &ram);
+
+        let black = ga.ink_for_pen(16).color();
+        for x in 0..8 {
+            assert_eq!(video.buffer()[x], black, "x={}", x);
+        }
+    }
+
+    #[test]
+    fn full_frame_fills_visible_buffer_uniformly() {
+        let mut video = Video::new();
+        let mut crtc = Crtc::new();
+        setup_standard_crtc(&mut crtc);
+        let ga = GateArray::new();
+        let ram = TestRam::new(); // 0x00 -> pen 0 (White)
+
+        // 312 scanlines * 64 chars = 19968 ticks (one full frame)
+        for _ in 0..19968 {
+            video.tick(&crtc, &ga, &ram);
+            crtc.tick();
+        }
+
+        let white = ga.ink_for_pen(0).color();
+        for y in 0..WINDOW_HEIGHT {
+            for x in 0..WINDOW_WIDTH {
+                let idx = y * WINDOW_WIDTH + x;
+                assert_eq!(video.buffer()[idx], white, "({}, {})", x, y);
+            }
+        }
+    }
+
+    #[test]
+    fn clear_resets_buffer_to_zeros() {
+        let mut video = Video::new();
+        let mut crtc = Crtc::new();
+        setup_standard_crtc(&mut crtc);
+        let ga = GateArray::new();
+        let ram = TestRam::new();
+
+        video.tick(&crtc, &ga, &ram);
+        assert_ne!(video.buffer()[0], 0);
+
+        video.clear();
+        assert!(video.buffer().iter().all(|&p| p == 0));
     }
 }

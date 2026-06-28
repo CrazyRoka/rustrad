@@ -15,9 +15,7 @@ fn main() {
     let memory = CpcMemory::new_64k();
     let mut bus = Cpc::new(memory, ROM_BYTES_464_MODEL);
     let mut cpu = Z80::new();
-    let video = Video::new();
 
-    let mut buffer: Vec<u32> = vec![0; WINDOW_HEIGHT * WINDOW_WIDTH];
     let mut window = match Window::new(
         "Amstrad CPC 464 Emulator",
         WINDOW_WIDTH,
@@ -36,7 +34,6 @@ fn main() {
     // let mut unlimited_fps = false;
     let mut last_fps_update = Instant::now();
     let mut frame_count = 0;
-    let mut cycles_counter = 0;
 
     while window.is_open() {
         bus.ppi_mut().keyboard_mut().reset();
@@ -46,21 +43,29 @@ fn main() {
             }
         }
 
-        while cycles_counter < CYCLES_PER_FRAME {
+        loop {
             let cycles = cpu.execute(&mut bus);
-            // TODO: align cycles according to Gate Array documentation
-            if cycles_counter / CYCLES_PER_LINE != (cycles_counter + cycles) / CYCLES_PER_LINE {
-                bus.gate_array_mut().hsync();
+            let ticks = (cycles + 3) / 4;
+
+            let mut should_exit = false;
+            for _ in 0..ticks {
+                bus.tick();
                 if bus.gate_array_mut().interrupt_requested() {
                     cpu.request_int(0xFF);
                 }
+                if bus.crtc().c0() == 0 && bus.crtc().c4() == 0 && bus.crtc().c9() == 0 {
+                    should_exit = true;
+                }
             }
-            cycles_counter += cycles;
-        }
-        cycles_counter -= CYCLES_PER_FRAME;
-        video.render(&bus, &mut buffer);
 
-        if let Err(err) = window.update_with_buffer(&buffer, WINDOW_WIDTH, WINDOW_HEIGHT) {
+            if should_exit {
+                break;
+            }
+        }
+
+        if let Err(err) =
+            window.update_with_buffer(bus.video().buffer(), WINDOW_WIDTH, WINDOW_HEIGHT)
+        {
             panic!("Failed to update window: {}", err);
         }
 
