@@ -154,6 +154,12 @@ impl Ppi {
 
     fn write_control_register(&mut self, value: u8) {
         match value {
+            0x00..=0x7F => {
+                let bit = (value >> 1) & 0b111;
+                let state = value & 0b1;
+                let new_value = (self.port_c_latch & !(1 << bit)) | (state << bit);
+                self.write_port_c(new_value);
+            }
             0x82 => self.port_a_direction = PpiDirection::Output,
             0x92 => self.port_a_direction = PpiDirection::Input,
             _ => panic!(
@@ -1618,5 +1624,393 @@ mod tests {
         let stable = ppi.read(0xF500) & CASSETTE_READ_BIT;
         ppi.tick_tape(1_000_000);
         assert_eq!(ppi.read(0xF500) & CASSETTE_READ_BIT, stable);
+    }
+
+    #[test]
+    fn bsr_set_bit_0_sets_only_bit_0() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x00);
+        ppi.write(0xF701, 0x01); // 0_000_000_1 = set bit 0
+        assert_eq!(ppi.read(0xF600), 0x01);
+    }
+
+    #[test]
+    fn bsr_clear_bit_0_clears_only_bit_0() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0xFF);
+        ppi.write(0xF700, 0x00); // 0_000_000_0 = clear bit 0
+        assert_eq!(ppi.read(0xF600), 0xFE);
+    }
+
+    #[test]
+    fn bsr_set_each_bit_0_through_7_individually() {
+        for bit in 0u8..=7 {
+            let mut ppi = Ppi::new();
+            ppi.write(0xF782, 0x82);
+            ppi.write(0xF600, 0x00);
+            let bsr = (bit << 1) | 1; // set bit `bit`
+            ppi.write(0xF700 | bsr as u16, bsr);
+            assert_eq!(
+                ppi.read(0xF600),
+                1u8 << bit,
+                "BSR {:#04X} should set only bit {}",
+                bsr,
+                bit
+            );
+        }
+    }
+
+    #[test]
+    fn bsr_clear_each_bit_0_through_7_individually() {
+        for bit in 0u8..=7 {
+            let mut ppi = Ppi::new();
+            ppi.write(0xF782, 0x82);
+            ppi.write(0xF600, 0xFF);
+            let bsr = bit << 1; // clear bit `bit`
+            ppi.write(0xF700 | bsr as u16, bsr);
+            assert_eq!(
+                ppi.read(0xF600),
+                0xFF & !(1u8 << bit),
+                "BSR {:#04X} should clear only bit {}",
+                bsr,
+                bit
+            );
+        }
+    }
+
+    #[test]
+    fn bsr_set_preserves_other_bits() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0b1010_1010);
+        ppi.write(0xF701, 0x01); // set bit 0
+        assert_eq!(ppi.read(0xF600), 0b1010_1011);
+    }
+
+    #[test]
+    fn bsr_clear_preserves_other_bits() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0b1111_1111);
+        ppi.write(0xF708, 0x08); // 0_000_100_0 = clear bit 4
+        assert_eq!(ppi.read(0xF600), 0b1110_1111);
+    }
+
+    #[test]
+    fn bsr_does_not_change_port_a_direction() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        assert_eq!(ppi.port_a_direction, PpiDirection::Output);
+        ppi.write(0xF701, 0x01);
+        assert_eq!(
+            ppi.port_a_direction,
+            PpiDirection::Output,
+            "BSR must not change Port A direction"
+        );
+
+        ppi.write(0xF792, 0x92);
+        assert_eq!(ppi.port_a_direction, PpiDirection::Input);
+        ppi.write(0xF703, 0x03);
+        assert_eq!(
+            ppi.port_a_direction,
+            PpiDirection::Input,
+            "BSR must not change Port A direction"
+        );
+    }
+
+    #[test]
+    fn bsr_does_not_reset_port_a_latch() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF400, 0x42);
+        ppi.write(0xF701, 0x01);
+        assert_eq!(ppi.port_a_latch, 0x42, "BSR must not touch Port A latch");
+    }
+
+    #[test]
+    fn bsr_does_not_reset_other_port_c_bits_to_zero() {
+        // Unlike group configuration, BSR must NOT clear the rest of Port C.
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0xCC);
+        ppi.write(0xF701, 0x01); // set bit 0 → 0xCD
+        assert_eq!(ppi.read(0xF600), 0xCD);
+    }
+
+    #[test]
+    fn bsr_does_not_affect_port_b_read() {
+        let mut ppi = Ppi::new();
+        let before = ppi.read(0xF500);
+        ppi.write(0xF701, 0x01);
+        ppi.write(0xF70F, 0x0F);
+        ppi.write(0xF708, 0x08);
+        let after = ppi.read(0xF500);
+        assert_eq!(before, after, "BSR must not affect Port B");
+    }
+
+    #[test]
+    fn bsr_don_t_care_bits_6_4_are_ignored() {
+        // Same N2..N0 + VAL with arbitrary bits 6-4 must give identical results.
+        for dc in [0x00u8, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70] {
+            let mut ppi = Ppi::new();
+            ppi.write(0xF782, 0x82);
+            ppi.write(0xF600, 0x00);
+            let bsr = dc | 0x01; // set bit 0
+            ppi.write(0xF700 | bsr as u16, bsr);
+            assert_eq!(
+                ppi.read(0xF600),
+                0x01,
+                "BSR {:#04X} should behave identically (don't-care bits 6-4)",
+                bsr
+            );
+        }
+    }
+
+    #[test]
+    fn bsr_address_low_byte_is_ignored() {
+        // 0xF700..=0xF7FF all hit the control register.
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x00);
+        ppi.write(0xF7FF, 0x01); // set bit 0 via 0xF7FF
+        assert_eq!(ppi.read(0xF600), 0x01);
+        ppi.write(0xF7AA, 0x02); // clear bit 1 via 0xF7AA — bit 1 already 0
+        assert_eq!(ppi.read(0xF600), 0x01);
+        ppi.write(0xF755, 0x03); // set bit 1 via 0xF755
+        assert_eq!(ppi.read(0xF600), 0x03);
+    }
+
+    #[test]
+    fn bsr_set_bit_7_enables_psg_bdir() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x00);
+        ppi.write(0xF70F, 0x0F); // 0_000_111_1 = set bit 7
+        assert!(ppi.psg_bdir());
+        assert_eq!(ppi.psg_bus_function(), PsgBusFunction::WriteRegister);
+    }
+
+    #[test]
+    fn bsr_set_bit_6_enables_psg_bc1() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x00);
+        ppi.write(0xF70D, 0x0D); // 0_000_110_1 = set bit 6
+        assert!(ppi.psg_bc1());
+        assert_eq!(ppi.psg_bus_function(), PsgBusFunction::ReadRegister);
+    }
+
+    #[test]
+    fn bsr_set_bits_7_then_6_enters_select_register_mode() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF400, 0x0E); // PSG register 14 on Port A
+        ppi.write(0xF600, 0x00);
+
+        ppi.write(0xF70F, 0x0F); // set bit 7 → WriteRegister
+        assert_eq!(ppi.psg_bus_function(), PsgBusFunction::WriteRegister);
+        assert_eq!(
+            ppi.psg_selected_register, 0,
+            "WriteRegister must not latch the selected register"
+        );
+
+        ppi.write(0xF70D, 0x0D); // set bit 6 → SelectRegister
+        assert_eq!(ppi.psg_bus_function(), PsgBusFunction::SelectRegister);
+        assert_eq!(
+            ppi.psg_selected_register, 0x0E,
+            "SelectRegister via BSR must latch Port A into psg_selected_register"
+        );
+    }
+
+    #[test]
+    fn bsr_clear_bit_7_disables_psg_bdir() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x80); // BDIR on
+        ppi.write(0xF70E, 0x0E); // 0_000_111_0 = clear bit 7
+        assert!(!ppi.psg_bdir());
+        assert_eq!(ppi.psg_bus_function(), PsgBusFunction::Inactive);
+    }
+
+    #[test]
+    fn bsr_clear_bit_6_disables_psg_bc1() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x40); // BC1 on
+        ppi.write(0xF70C, 0x0C); // 0_000_110_0 = clear bit 6
+        assert!(!ppi.psg_bc1());
+        assert_eq!(ppi.psg_bus_function(), PsgBusFunction::Inactive);
+    }
+
+    #[test]
+    fn bsr_can_turn_cassette_motor_on() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x00);
+        ppi.write(0xF709, 0x09); // 0_000_100_1 = set bit 4 (motor)
+        assert!(ppi.cassette_motor());
+        assert!(
+            ppi.tape().unwrap().is_playing(),
+            "BSR setting motor bit must start the tape"
+        );
+    }
+
+    #[test]
+    fn bsr_can_turn_cassette_motor_off() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x10); // motor on
+        ppi.write(0xF708, 0x08); // 0_000_100_0 = clear bit 4
+        assert!(!ppi.cassette_motor());
+        assert!(
+            !ppi.tape().unwrap().is_playing(),
+            "BSR clearing motor bit must stop the tape"
+        );
+    }
+
+    #[test]
+    fn bsr_set_clear_cassette_write_data_bit_5() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x00);
+        ppi.write(0xF70B, 0x0B); // 0_000_101_1 = set bit 5
+        assert!(ppi.cassette_write_data());
+        ppi.write(0xF70A, 0x0A); // 0_000_101_0 = clear bit 5
+        assert!(!ppi.cassette_write_data());
+    }
+
+    #[test]
+    fn bsr_can_modify_keyboard_row_bits_one_at_a_time() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x00);
+
+        ppi.write(0xF703, 0x03); // set bit 1
+        assert_eq!(ppi.keyboard_row(), 0b0010);
+        ppi.write(0xF707, 0x07); // set bit 3
+        assert_eq!(ppi.keyboard_row(), 0b1010);
+        ppi.write(0xF705, 0x05); // set bit 2
+        assert_eq!(ppi.keyboard_row(), 0b1110);
+        ppi.write(0xF702, 0x02); // clear bit 1
+        assert_eq!(ppi.keyboard_row(), 0b1100);
+    }
+
+    #[test]
+    fn bsr_does_not_disturb_upper_nibble_when_changing_row() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0xC0); // BDIR=1, BC1=1, row 0
+        ppi.write(0xF705, 0x05); // set bit 2 → row 4
+        assert_eq!(ppi.keyboard_row(), 0b0100);
+        assert!(ppi.psg_bdir(), "BDIR must be preserved");
+        assert!(ppi.psg_bc1(), "BC1 must be preserved");
+        assert_eq!(ppi.read(0xF600), 0xC4);
+    }
+
+    #[test]
+    fn bsr_accumulates_across_multiple_writes() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x00);
+
+        ppi.write(0xF701, 0x01); // set bit 0
+        ppi.write(0xF705, 0x05); // set bit 2
+        ppi.write(0xF709, 0x09); // set bit 4
+        ppi.write(0xF70D, 0x0D); // set bit 6
+        assert_eq!(ppi.read(0xF600), 0b0101_0101);
+
+        ppi.write(0xF704, 0x04); // clear bit 2
+        ppi.write(0xF70C, 0x0C); // clear bit 6
+        assert_eq!(ppi.read(0xF600), 0b0001_0001);
+    }
+
+    #[test]
+    fn bsr_set_then_clear_returns_to_original_value() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0xA5);
+        let original = ppi.read(0xF600);
+
+        ppi.write(0xF707, 0x07); // set bit 3
+        assert_eq!(ppi.read(0xF600), original | 0x08);
+        ppi.write(0xF706, 0x06); // clear bit 3
+        assert_eq!(ppi.read(0xF600), original);
+    }
+
+    #[test]
+    fn bsr_after_group_config_does_not_reset_latches() {
+        // Group config writes reset latches on real 8255 silicon.
+        // BSR writes must NOT. Verify by setting non-zero latches,
+        // issuing a BSR, and confirming only the targeted bit changes.
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF400, 0x77); // Port A = 0x77
+        ppi.write(0xF600, 0x55); // Port C = 0x55
+        ppi.write(0xF70F, 0x0F); // BSR set bit 7
+        assert_eq!(ppi.read(0xF600), 0xD5, "Only bit 7 must change");
+        assert_eq!(ppi.port_a_latch, 0x77, "Port A latch must be untouched");
+    }
+
+    #[test]
+    fn bsr_uses_control_register_path_not_port_c_data_path() {
+        // Sanity: writing 0x01 to 0xF6xx replaces the entire latch with 0x01.
+        //         writing 0x01 to 0xF7xx (BSR) sets only bit 0.
+        let mut ppi_a = Ppi::new();
+        ppi_a.write(0xF782, 0x82);
+        ppi_a.write(0xF600, 0xAA);
+        ppi_a.write(0xF600, 0x01); // full Port C write → 0x01
+        assert_eq!(ppi_a.read(0xF600), 0x01);
+
+        let mut ppi_b = Ppi::new();
+        ppi_b.write(0xF782, 0x82);
+        ppi_b.write(0xF600, 0xAA);
+        ppi_b.write(0xF701, 0x01); // BSR set bit 0 → 0xAB
+        assert_eq!(ppi_b.read(0xF600), 0xAB);
+    }
+
+    #[test]
+    fn bsr_motor_toggling_via_individual_bits_drives_tape() {
+        // End-to-end: starting from a Port C with motor on, use BSR to flip
+        // motor bit off and on, verifying tape state each time.
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x10); // motor on
+
+        ppi.write(0xF708, 0x08); // BSR clear bit 4
+        assert!(!ppi.tape().unwrap().is_playing());
+
+        ppi.write(0xF709, 0x09); // BSR set bit 4
+        assert!(ppi.tape().unwrap().is_playing());
+
+        // Toggle an unrelated bit while motor stays on — tape must not stop.
+        ppi.write(0xF701, 0x01); // set bit 0
+        assert!(ppi.tape().unwrap().is_playing());
+        ppi.write(0xF700, 0x00); // clear bit 0
+        assert!(ppi.tape().unwrap().is_playing());
+    }
+
+    #[test]
+    fn bsr_does_not_invoke_group_config_behavior_for_bytes_below_0x80() {
+        // Any byte with bit 7 = 0 is BSR, regardless of bits 6-4.
+        // Specifically, bytes that share bits with the standard group-config
+        // patterns must not be misinterpreted as group config.
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x00);
+
+        // 0x02 = 0_000_001_0 = clear bit 1 (must NOT be treated as a group
+        // config byte that would change Port A direction).
+        ppi.write(0xF702, 0x02);
+        assert_eq!(
+            ppi.port_a_direction,
+            PpiDirection::Output,
+            "BSR byte 0x02 must not be confused with group config"
+        );
+        assert_eq!(ppi.read(0xF600), 0x00, "bit 1 was already 0");
     }
 }

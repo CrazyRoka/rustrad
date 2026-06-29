@@ -40,7 +40,7 @@ fn main() {
         }
     };
     window.set_target_fps(50);
-    // let mut unlimited_fps = false;
+    let mut unlimited_fps = false;
     let mut last_fps_update = Instant::now();
     let mut frame_count = 0;
     let mut ticks_count = 0;
@@ -50,6 +50,15 @@ fn main() {
         for key in window.get_keys() {
             if let Some(spectrum_key) = convert_to_cpc_key(key) {
                 bus.ppi_mut().keyboard_mut().press_key(&spectrum_key);
+            }
+        }
+
+        if window.is_key_pressed(Key::F12, KeyRepeat::No) {
+            unlimited_fps = !unlimited_fps;
+            if unlimited_fps {
+                window.set_target_fps(0);
+            } else {
+                window.set_target_fps(50);
             }
         }
 
@@ -81,17 +90,15 @@ fn main() {
         let elapsed = last_fps_update.elapsed();
         if elapsed.as_secs_f32() >= 0.5 {
             let fps = frame_count as f32 / elapsed.as_secs_f32();
-            // let mode_str = if unlimited_fps {
-            //     "Unlimited"
-            // } else {
-            //     "Locked (50Hz)"
-            // };
+            let mode_str = if unlimited_fps {
+                "Unlimited"
+            } else {
+                "Locked (50Hz)"
+            };
 
             window.set_title(&format!(
-                "Amstrad CPC 464 | FPS: {:.1}",
-                fps,
-                // "Amstrad CPC 464 | FPS: {:.1} | Mode: {} [Press F1 to Toggle]",
-                // fps, mode_str
+                "Amstrad CPC 464 | FPS: {:.1} | Mode: {} [Press F12 to Toggle]",
+                fps, mode_str
             ));
 
             frame_count = 0;
