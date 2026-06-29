@@ -55,12 +55,7 @@ impl Cpc {
         &mut self.video
     }
 
-    // Advances the video subsystem by exactly one CRTC character clock (one cycle).
-    // Per cycle:
-    //   1. Tick CRTC once.
-    //   2. If hsync was high and is now low (falling edge), call `gate_array.hsync()`.
-    //   3. Set `gate_array.set_vsync(crtc.vsync())`.
-    //   4. Set `ppi.set_vsync(crtc.vsync())`.
+    // Advances the video and other subsystems by exactly one CRTC character clock (one cycle).
     pub fn tick(&mut self) {
         self.video.tick(&self.crtc, &self.gate_array, &self.memory);
         let hsync_prev = self.crtc.hsync();
@@ -70,6 +65,7 @@ impl Cpc {
         }
         self.gate_array.set_vsync(self.crtc.vsync());
         self.ppi.set_vsync(self.crtc.vsync());
+        self.ppi.tick_tape(4)
     }
 
     /// Reads raw RAM, bypassing ROM mapping. This is how the GA accesses memory.

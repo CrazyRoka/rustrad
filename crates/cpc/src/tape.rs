@@ -66,9 +66,7 @@ impl TapePlayer {
             return Err(TapeError::InvalidHeader);
         }
 
-        if data[EXPECTED_HEADER.len()] != 1
-            || (data[EXPECTED_HEADER.len() + 1] != 13 && data[EXPECTED_HEADER.len() + 1] != 20)
-        {
+        if data[EXPECTED_HEADER.len()] != 1 || data[EXPECTED_HEADER.len() + 1] > 20 {
             return Err(TapeError::InvalidHeader);
         }
 
@@ -87,39 +85,75 @@ impl TapePlayer {
                     let pause_high = data[idx + 1];
                     let pause = (pause_low as u64) | ((pause_high as u64) << 8);
                     idx += 2;
-
                     let low = data[idx] as usize;
                     let high = data[idx + 1] as usize;
                     idx += 2;
-
                     let bytes_to_follow = (high << 8) | low;
                     if idx + bytes_to_follow > data.len() {
                         return Err(TapeError::Truncated);
                     }
-
-                    let block = &data[idx..idx + bytes_to_follow];
-                    idx += bytes_to_follow;
-
-                    let flag = block[0];
+                    let flag = data[idx];
                     let pulses = if flag < 128 { 8063 } else { 3223 };
 
-                    for _ in 0..pulses {
-                        durations.push_back(Pulse::new_toggle(2168));
+                    add_data_block(
+                        data,
+                        &mut idx,
+                        &mut durations,
+                        2168,
+                        667,
+                        735,
+                        855,
+                        1710,
+                        pulses,
+                        8,
+                        bytes_to_follow,
+                        pause,
+                    );
+                    idx += bytes_to_follow;
+                }
+                0x11 => {
+                    if idx + 16 > data.len() {
+                        return Err(TapeError::Truncated);
                     }
-                    durations.push_back(Pulse::new_toggle(667));
-                    durations.push_back(Pulse::new_toggle(735));
+                    let pilot = (data[idx] as u64) | ((data[idx + 1] as u64) << 8);
+                    idx += 2;
+                    let sync1 = (data[idx] as u64) | ((data[idx + 1] as u64) << 8);
+                    idx += 2;
+                    let sync2 = (data[idx] as u64) | ((data[idx + 1] as u64) << 8);
+                    idx += 2;
+                    let zero = (data[idx] as u64) | ((data[idx + 1] as u64) << 8);
+                    idx += 2;
+                    let one = (data[idx] as u64) | ((data[idx + 1] as u64) << 8);
+                    idx += 2;
+                    let pulses = (data[idx] as u16) | ((data[idx + 1] as u16) << 8);
+                    idx += 2;
+                    let used_bits = data[idx];
+                    idx += 1;
+                    let pause = (data[idx] as u64) | ((data[idx + 1] as u64) << 8);
+                    idx += 2;
+                    let bytes_to_follow = (data[idx] as usize)
+                        | ((data[idx + 1] as usize) << 8)
+                        | ((data[idx + 2] as usize) << 16);
+                    idx += 3;
+                    if idx + bytes_to_follow > data.len() {
+                        return Err(TapeError::Truncated);
+                    }
 
-                    for byte in block {
-                        for bit in (0..8).rev() {
-                            let p = if ((byte >> bit) & 1) != 0 { 1710 } else { 855 };
-                            durations.push_back(Pulse::new_toggle(p));
-                            durations.push_back(Pulse::new_toggle(p));
-                        }
-                    }
-
-                    if pause > 0 {
-                        durations.push_back(Pulse::new_low(3500 * pause));
-                    }
+                    add_data_block(
+                        data,
+                        &mut idx,
+                        &mut durations,
+                        pilot,
+                        sync1,
+                        sync2,
+                        zero,
+                        one,
+                        pulses,
+                        used_bits,
+                        bytes_to_follow,
+                        pause,
+                    );
+                    idx += bytes_to_follow;
                 }
                 0x20 => {
                     if idx + 2 > data.len() {
@@ -133,6 +167,15 @@ impl TapePlayer {
 
                     if pause > 0 {
                         durations.push_back(Pulse::new_low(3500 * pause));
+                    }
+                }
+                0x30 => {
+                    if idx + 1 > data.len() {
+                        return Err(TapeError::Truncated);
+                    }
+                    idx += 1 + data[idx] as usize;
+                    if idx > data.len() {
+                        return Err(TapeError::Truncated);
                     }
                 }
                 _ => return Err(TapeError::UnknownBlockId(block_type)),
@@ -183,6 +226,44 @@ impl TapePlayer {
 
     pub fn stop(&mut self) {
         self.playing = false;
+    }
+}
+
+fn add_data_block(
+    data: &[u8],
+    idx: &mut usize,
+    durations: &mut VecDeque<Pulse>,
+    pilot: u64,
+    sync1: u64,
+    sync2: u64,
+    zero: u64,
+    one: u64,
+    pulses: u16,
+    used_bits: u8,
+    length: usize,
+    pause: u64,
+) {
+    for _ in 0..pulses {
+        durations.push_back(Pulse::new_toggle(pilot));
+    }
+    durations.push_back(Pulse::new_toggle(sync1));
+    durations.push_back(Pulse::new_toggle(sync2));
+    let block = &data[*idx..*idx + length];
+    for (counter, byte) in block.iter().enumerate() {
+        let used = if counter + 1 == block.len() {
+            used_bits
+        } else {
+            8
+        };
+        for bit in ((8 - used)..8).rev() {
+            let p = if ((byte >> bit) & 1) != 0 { one } else { zero };
+            durations.push_back(Pulse::new_toggle(p));
+            durations.push_back(Pulse::new_toggle(p));
+        }
+    }
+
+    if pause > 0 {
+        durations.push_back(Pulse::new_low(3500 * pause));
     }
 }
 
@@ -295,22 +376,15 @@ mod tests {
     }
 
     #[test]
-    fn from_cdt_accepts_standard_v1_13_header() {
-        let header = make_cdt_header(1, 13);
-        let mut data = header.clone();
-        data.extend_from_slice(&[0x20, 0x01, 0x00]);
-        let result = TapePlayer::from_cdt(&data);
-        assert!(result.is_ok(), "v1.13 header must be accepted");
-    }
-
-    #[test]
-    fn from_cdt_accepts_v1_20_header() {
-        // Tests that we don't hardcode v1.13
-        let header = make_cdt_header(1, 20);
-        let mut data = header.clone();
-        data.extend_from_slice(&[0x20, 0x01, 0x00]);
-        let result = TapePlayer::from_cdt(&data);
-        assert!(result.is_ok(), "v1.20 header must be accepted");
+    fn from_cdt_accepts_standard_v1_header() {
+        for minor in 0..=20 {
+            // Tests that we don't hardcode v1.13
+            let header = make_cdt_header(1, minor);
+            let mut data = header.clone();
+            data.extend_from_slice(&[0x20, 0x01, 0x00]);
+            let result = TapePlayer::from_cdt(&data);
+            assert!(result.is_ok(), "v1.20 header must be accepted");
+        }
     }
 
     #[test]
@@ -652,5 +726,397 @@ mod tests {
                 expected
             );
         }
+    }
+
+    fn make_cdt_with_block_30(text: &[u8]) -> Vec<u8> {
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x30);
+        v.push(text.len() as u8);
+        v.extend_from_slice(text);
+        v
+    }
+
+    #[test]
+    fn block_30_parses_without_error() {
+        let cdt = make_cdt_with_block_30(b"Level 1");
+        let result = TapePlayer::from_cdt(&cdt);
+        assert!(result.is_ok(), "Block 30 must parse without error");
+    }
+
+    #[test]
+    fn block_30_generates_no_pulses() {
+        let cdt = make_cdt_with_block_30(b"Level 1");
+        let player = TapePlayer::from_cdt(&cdt).unwrap();
+        assert!(
+            player.durations.is_empty(),
+            "Block 30 must not produce any pulses"
+        );
+    }
+
+    #[test]
+    fn block_30_zero_length_text_is_valid() {
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x30);
+        v.push(0x00); // N = 0
+        let result = TapePlayer::from_cdt(&v);
+        assert!(result.is_ok(), "Zero-length text description must be valid");
+    }
+
+    #[test]
+    fn block_30_max_length_255_is_valid() {
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x30);
+        v.push(255);
+        v.extend_from_slice(&vec![b'A'; 255]);
+        let result = TapePlayer::from_cdt(&v);
+        assert!(
+            result.is_ok(),
+            "Max length (255) text description must be valid"
+        );
+    }
+
+    #[test]
+    fn block_30_truncated_text_returns_truncated_error() {
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x30);
+        v.push(10); // claims 10 bytes
+        v.extend_from_slice(b"Short"); // only 5 bytes follow
+        let result = TapePlayer::from_cdt(&v);
+        assert!(
+            matches!(result, Err(TapeError::Truncated)),
+            "Truncated block 30 text must return Truncated error"
+        );
+    }
+
+    #[test]
+    fn block_30_missing_length_byte_returns_truncated_error() {
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x30);
+        // No length byte at all
+        let result = TapePlayer::from_cdt(&v);
+        assert!(
+            matches!(result, Err(TapeError::Truncated)),
+            "Block 30 without length byte must return Truncated error"
+        );
+    }
+
+    #[test]
+    fn block_30_multiple_in_sequence_produce_no_pulses() {
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x30);
+        v.push(5);
+        v.extend_from_slice(b"Hello");
+        v.push(0x30);
+        v.push(5);
+        v.extend_from_slice(b"World");
+        let player = TapePlayer::from_cdt(&v).unwrap();
+        assert!(
+            player.durations.is_empty(),
+            "Multiple block 30s must not produce any pulses"
+        );
+    }
+
+    #[test]
+    fn block_30_followed_by_block_20_preserves_pause() {
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x30);
+        v.push(5);
+        v.extend_from_slice(b"Hello");
+        v.extend_from_slice(&[0x20, 0x01, 0x00]); // 1ms pause
+        let player = TapePlayer::from_cdt(&v).unwrap();
+        assert_eq!(
+            player.durations.len(),
+            1,
+            "Block 30 should be skipped; only the block 20 pause should exist"
+        );
+    }
+
+    #[test]
+    fn block_30_preceding_block_20_preserves_pause() {
+        let mut v = make_cdt_header(1, 13);
+        v.extend_from_slice(&[0x20, 0x01, 0x00]); // 1ms pause
+        v.push(0x30);
+        v.push(5);
+        v.extend_from_slice(b"Hello");
+        let player = TapePlayer::from_cdt(&v).unwrap();
+        assert_eq!(
+            player.durations.len(),
+            1,
+            "Block 20 pause before block 30 should still exist"
+        );
+    }
+
+    #[test]
+    fn block_30_between_two_block_20s_preserves_both_pauses() {
+        let mut v = make_cdt_header(1, 13);
+        v.extend_from_slice(&[0x20, 0x01, 0x00]); // 1ms pause
+        v.push(0x30);
+        v.push(7);
+        v.extend_from_slice(b"Level 1");
+        v.extend_from_slice(&[0x20, 0x02, 0x00]); // 2ms pause
+        let player = TapePlayer::from_cdt(&v).unwrap();
+        assert_eq!(
+            player.durations.len(),
+            2,
+            "Block 30 between two block 20s must not consume or alter either pause"
+        );
+    }
+
+    #[test]
+    fn block_30_does_not_affect_ear_state() {
+        let cdt = make_cdt_with_block_30(b"Level 1");
+        let mut player = TapePlayer::from_cdt(&cdt).unwrap();
+        player.play();
+        player.advance(1_000_000);
+        assert!(
+            !player.ear(),
+            "Block 30 must not toggle or affect EAR state"
+        );
+    }
+
+    #[test]
+    fn block_30_alone_results_in_non_playing_tape() {
+        let cdt = make_cdt_with_block_30(b"Level 1");
+        let mut player = TapePlayer::from_cdt(&cdt).unwrap();
+        player.play();
+        assert!(
+            !player.is_playing(),
+            "Tape with only block 30 should not be playing (no pulses to consume)"
+        );
+    }
+
+    #[test]
+    fn block_30_with_carriage_return_in_text_is_valid() {
+        // The CDT spec uses 0x0D as a line separator within text fields
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x30);
+        v.push(15);
+        v.extend_from_slice(b"Level 1\x0DLevel 2");
+        let result = TapePlayer::from_cdt(&v);
+        assert!(
+            result.is_ok(),
+            "Block 30 with 0x0D line separator must be valid"
+        );
+    }
+
+    #[test]
+    fn block_30_with_extended_latin1_characters_is_valid() {
+        // ISO 8859-1 (Latin-1) encoding is permitted
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x30);
+        v.push(3);
+        v.extend_from_slice(&[0xC3, 0xA9, 0xFC]); // Latin-1 bytes
+        let result = TapePlayer::from_cdt(&v);
+        assert!(
+            result.is_ok(),
+            "Block 30 with Latin-1 characters must be valid"
+        );
+    }
+
+    #[test]
+    fn block_30_as_first_block_followed_by_block_10_works() {
+        let mut v = make_cdt_header(1, 13);
+        // Text description first
+        v.push(0x30);
+        v.push(9);
+        v.extend_from_slice(b"Main Menu");
+        // Then a standard data block with 2-byte payload
+        v.push(0x10);
+        v.push(0x01);
+        v.push(0x00);
+        v.push(0x02);
+        v.push(0x00);
+        v.extend_from_slice(&[0x00, 0x00]);
+
+        let player = TapePlayer::from_cdt(&v).unwrap();
+        // Block 10 with flag < 128: 8063 pilot + 2 sync + 2 bytes * 16 pulses + 1 pause
+        assert_eq!(
+            player.durations.len(),
+            8063 + 2 + 32 + 1,
+            "Block 30 before block 10 must not alter block 10 pulse count"
+        );
+    }
+
+    #[test]
+    fn block_30_as_last_block_does_not_error() {
+        let mut v = make_cdt_header(1, 13);
+        v.extend_from_slice(&[0x20, 0x01, 0x00]); // 1ms pause
+        v.push(0x30);
+        v.push(9);
+        v.extend_from_slice(b"Game Over");
+
+        let player = TapePlayer::from_cdt(&v).unwrap();
+        assert_eq!(
+            player.durations.len(),
+            1,
+            "Block 30 as last block must not add pulses"
+        );
+    }
+
+    fn make_cdt_with_block_11(
+        pilot: u16,
+        sync1: u16,
+        sync2: u16,
+        zero: u16,
+        one: u16,
+        pilot_tone: u16,
+        used_bits: u8,
+        pause: u16,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x11);
+        v.extend_from_slice(&pilot.to_le_bytes());
+        v.extend_from_slice(&sync1.to_le_bytes());
+        v.extend_from_slice(&sync2.to_le_bytes());
+        v.extend_from_slice(&zero.to_le_bytes());
+        v.extend_from_slice(&one.to_le_bytes());
+        v.extend_from_slice(&pilot_tone.to_le_bytes());
+        v.extend_from_slice(&used_bits.to_le_bytes());
+        v.extend_from_slice(&pause.to_le_bytes());
+        // 3-byte length
+        v.push((data.len() & 0xFF) as u8);
+        v.push(((data.len() >> 8) & 0xFF) as u8);
+        v.push(((data.len() >> 16) & 0xFF) as u8);
+        v.extend_from_slice(data);
+        v
+    }
+
+    #[test]
+    fn block_11_parses_without_error() {
+        let cdt = make_cdt_with_block_11(1000, 2000, 3000, 400, 800, 10, 8, 0, &[0xFF]);
+        assert!(TapePlayer::from_cdt(&cdt).is_ok());
+    }
+
+    #[test]
+    fn block_11_generates_correct_pulse_count() {
+        // 10 pilot + 2 sync + 1 byte * 8 bits * 2 pulses = 10 + 2 + 16 = 28
+        let cdt = make_cdt_with_block_11(1000, 2000, 3000, 400, 800, 10, 8, 0, &[0xFF]);
+        let player = TapePlayer::from_cdt(&cdt).unwrap();
+        assert_eq!(player.durations.len(), 28);
+    }
+
+    #[test]
+    fn block_11_includes_pause_pulse_if_pause_nonzero() {
+        // 10 + 2 + 16 = 28 data pulses + 1 pause = 29
+        let cdt = make_cdt_with_block_11(1000, 2000, 3000, 400, 800, 10, 8, 10, &[0xFF]);
+        let player = TapePlayer::from_cdt(&cdt).unwrap();
+        assert_eq!(player.durations.len(), 29);
+        assert!(matches!(player.durations.back().unwrap(), Pulse::Low(_)));
+    }
+
+    #[test]
+    fn block_11_zero_pause_does_not_add_pause_pulse() {
+        let cdt = make_cdt_with_block_11(1000, 2000, 3000, 400, 800, 10, 8, 0, &[0xFF]);
+        let player = TapePlayer::from_cdt(&cdt).unwrap();
+        assert_eq!(player.durations.len(), 28);
+        assert!(!matches!(player.durations.back().unwrap(), Pulse::Low(_)));
+    }
+
+    #[test]
+    fn block_11_pilot_pulses_use_specified_duration() {
+        let cdt = make_cdt_with_block_11(1000, 2000, 3000, 400, 800, 5, 8, 0, &[0x00]);
+        let player = TapePlayer::from_cdt(&cdt).unwrap();
+        for i in 0..5 {
+            assert_eq!(player.durations[i], Pulse::new_toggle(1000));
+        }
+    }
+
+    #[test]
+    fn block_11_sync_pulses_use_specified_durations() {
+        let cdt = make_cdt_with_block_11(1000, 2000, 3000, 400, 800, 5, 8, 0, &[0x00]);
+        let player = TapePlayer::from_cdt(&cdt).unwrap();
+        assert_eq!(player.durations[5], Pulse::new_toggle(2000));
+        assert_eq!(player.durations[6], Pulse::new_toggle(3000));
+    }
+
+    #[test]
+    fn block_11_bit_0_uses_zero_bit_duration() {
+        let cdt = make_cdt_with_block_11(1000, 2000, 3000, 400, 800, 5, 8, 0, &[0x00]);
+        let player = TapePlayer::from_cdt(&cdt).unwrap();
+        let data_start = 7; // 5 pilot + 2 sync
+        for i in 0..16 {
+            assert_eq!(player.durations[data_start + i], Pulse::new_toggle(400));
+        }
+    }
+
+    #[test]
+    fn block_11_bit_1_uses_one_bit_duration() {
+        let cdt = make_cdt_with_block_11(1000, 2000, 3000, 400, 800, 5, 8, 0, &[0xFF]);
+        let player = TapePlayer::from_cdt(&cdt).unwrap();
+        let data_start = 7;
+        for i in 0..16 {
+            assert_eq!(player.durations[data_start + i], Pulse::new_toggle(800));
+        }
+    }
+
+    #[test]
+    fn block_11_used_bits_limits_last_byte_bits() {
+        // used_bits = 3, data = 0b10000000 -> only 3 bits processed
+        // Bits 7, 6, 5 are processed.
+        // Bit 7 = 1 (two 800 pulses). Bits 6, 5 = 0 (four 400 pulses).
+        let cdt = make_cdt_with_block_11(1000, 2000, 3000, 400, 800, 5, 3, 0, &[0b10000000]);
+        let player = TapePlayer::from_cdt(&cdt).unwrap();
+
+        // Total: 5 pilot + 2 sync + 6 data = 13 pulses
+        assert_eq!(player.durations.len(), 13);
+
+        let data_start = 7;
+        // Bit 7 is 1
+        assert_eq!(player.durations[data_start], Pulse::new_toggle(800));
+        assert_eq!(player.durations[data_start + 1], Pulse::new_toggle(800));
+        // Bits 6 and 5 are 0
+        assert_eq!(player.durations[data_start + 2], Pulse::new_toggle(400));
+        assert_eq!(player.durations[data_start + 3], Pulse::new_toggle(400));
+        assert_eq!(player.durations[data_start + 4], Pulse::new_toggle(400));
+        assert_eq!(player.durations[data_start + 5], Pulse::new_toggle(400));
+    }
+
+    #[test]
+    fn block_11_multi_byte_data_preserves_byte_order() {
+        // data: 0xFF, 0x00
+        let cdt = make_cdt_with_block_11(1000, 2000, 3000, 400, 800, 5, 8, 0, &[0xFF, 0x00]);
+        let player = TapePlayer::from_cdt(&cdt).unwrap();
+
+        let data_start = 7;
+        // Byte 0 (0xFF): 16 pulses of 800
+        for i in 0..16 {
+            assert_eq!(player.durations[data_start + i], Pulse::new_toggle(800));
+        }
+        // Byte 1 (0x00): 16 pulses of 400
+        for i in 16..32 {
+            assert_eq!(player.durations[data_start + i], Pulse::new_toggle(400));
+        }
+    }
+
+    #[test]
+    fn block_11_rejects_truncated_header() {
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x11);
+        v.extend_from_slice(&[0x00, 0x00, 0x00]); // Only 3 bytes instead of 19
+        let result = TapePlayer::from_cdt(&v);
+        assert!(matches!(result, Err(TapeError::Truncated)));
+    }
+
+    #[test]
+    fn block_11_rejects_truncated_data() {
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x11);
+        // Minimal valid header (16 bytes)
+        v.extend_from_slice(&[0u8; 15]);
+        v.push(10); // claims 10 bytes follow
+        v.extend_from_slice(&[0u8; 5]); // only 5 follow
+        let result = TapePlayer::from_cdt(&v);
+        assert!(matches!(result, Err(TapeError::Truncated)));
+    }
+
+    #[test]
+    fn block_11_supports_large_data_length_3_bytes() {
+        let data = vec![0xAA; 300];
+        // 1 byte = 16 pulses. 300 bytes = 4800 pulses.
+        // 5 pilot + 2 sync + 4800 = 4807
+        let cdt = make_cdt_with_block_11(1000, 2000, 3000, 400, 800, 5, 8, 0, &data);
+        let player = TapePlayer::from_cdt(&cdt).unwrap();
+        assert_eq!(player.durations.len(), 4807);
     }
 }

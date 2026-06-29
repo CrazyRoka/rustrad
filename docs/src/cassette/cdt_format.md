@@ -63,7 +63,19 @@ An Amstrad CPC emulator must handle the following TZX block IDs with these speci
 
 #### ID 11: Turbo Loading Data Block
 * **Support:** Mandatory.
-* **Behavior:** The timings for playback are stored in the block header. Replays data using these explicit pulse and pilot timings. This is commonly used for Amstrad standard loads to lock in the variable baud rate.
+* **Behavior:** The timings for playback are explicitly stored in the block header, bypassing standard ROM timings. Replays data using these explicit pulse and pilot timings. This is commonly used for Amstrad standard loads to lock in the variable baud rate.
+* **Structure:**
+  * `0x00 - 0x01` (WORD): Length of pilot pulse.
+  * `0x02 - 0x03` (WORD): Length of sync first pulse.
+  * `0x04 - 0x05` (WORD): Length of sync second pulse.
+  * `0x06 - 0x07` (WORD): Length of zero bit pulse.
+  * `0x08 - 0x09` (WORD): Length of one bit pulse.
+  * `0x0A - 0x0B` (WORD): Length of pilot tone (number of pulses).
+  * `0x0C - 0x0D` (WORD): Used bits in last byte (other bits are 0). Values 1-8. A value of 0 is treated as 8.
+  * `0x0E - 0x0F` (WORD): Pause after this block in ms.
+  * `0x10 - 0x12` (DWORD, 3 bytes): Length of data that follows.
+  * `0x13+` (DATA): Data block.
+* **Amstrad Rule:** No Amstrad-specific deviations. Data is processed MSB first. Bits beyond the `Used bits in last byte` value are ignored and do not produce pulses.
 
 #### ID 12: Pure Tone
 * **Support:** Mandatory.
@@ -101,6 +113,14 @@ An Amstrad CPC emulator must handle the following TZX block IDs with these speci
 #### ID 2B: Set Signal Level (v1.20)
 * **Support:** Optional.
 * **Behavior:** Sets the current signal level to the specified value (high or low). Used to avoid ambiguities in custom loaders which are level-sensitive.
+
+#### ID 30: Text Description
+* **Support:** Mandatory.
+* **Behavior:** Contains a human-readable text description (up to 255 characters) used to identify sections of the tape (e.g., "Level 1", "Game Over", "Rewind Here"). This block is purely informational — it **must not produce any pulses, affect EAR state, or interrupt tape flow** in any way. The emulator should parse the block, skip its content during playback, and continue to the next block seamlessly.
+* **Structure:**
+  * Offset 0x00: `N` (BYTE) — Length of the text description (0–255).
+  * Offset 0x01: `CHAR[N]` — The text in ISO 8859-1 (Latin-1) encoding. Lines within the text are separated by a single `0x0D` (carriage return).
+* **Amstrad Rule:** No Amstrad-specific deviations. Treated identically to the TZX specification. A zero-length description (`N = 0`) is valid and is a no-op. The text is intended to be displayed while browsing or seeking within the tape, not necessarily during real-time playback.
 
 #### ID 33: Hardware Type
 * **Amstrad Rule:** Hardware types `0x01` (External Storage) through `0x0F` (EPROM programmers) are Spectrum specific and must be ignored. Hardware Type `0x00` (Computers) can be used but only as a guideline.

@@ -1,6 +1,6 @@
-use std::time::Instant;
+use std::{env::args, fs, process::exit, time::Instant};
 
-use cpc::{Cpc, CpcKey, CpcMemory, GateArray, Ppi, Video, WINDOW_HEIGHT, WINDOW_WIDTH};
+use cpc::{Cpc, CpcKey, CpcMemory, GateArray, Ppi, TapePlayer, Video, WINDOW_HEIGHT, WINDOW_WIDTH};
 use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 use z80::Z80;
 
@@ -12,8 +12,17 @@ const TICKS_PER_FRAME: u64 = TICKS_PER_LINE * LINES_PER_FRAME;
 const ROM_BYTES_464_MODEL: &[u8] = include_bytes!("../../../roms/cpc464.rom");
 
 fn main() {
+    if args().len() != 2 {
+        eprintln!("Expected tape argument");
+        exit(0);
+    }
+    let tape_path = args().nth(1).unwrap();
+    let tape_bytes = fs::read(tape_path).expect("Failed to load tape");
+    let tape = TapePlayer::from_cdt(&tape_bytes).expect("Failed to create tape");
+
     let memory = CpcMemory::new_64k();
     let mut bus = Cpc::new(memory, ROM_BYTES_464_MODEL);
+    bus.ppi_mut().load_tape(tape);
     let mut cpu = Z80::new();
 
     let mut window = match Window::new(
