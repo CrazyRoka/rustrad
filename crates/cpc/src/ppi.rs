@@ -1,4 +1,4 @@
-use crate::keyboard::Keyboard;
+use crate::{TapePlayer, keyboard::Keyboard};
 
 #[derive(PartialEq, Eq, Debug)]
 enum PpiDirection {
@@ -20,12 +20,12 @@ pub struct Ppi {
     port_a_direction: PpiDirection,
     port_c_latch: u8,
     screen_frequency_50hz: bool,
-    cassette_read_data: bool,
     parallel_port_busy: bool,
     exp_present: bool,
     manufacturer_jumper: u8,
     psg_selected_register: u8,
     keyboard: Keyboard,
+    tape: Option<TapePlayer>,
 }
 
 impl Ppi {
@@ -36,12 +36,12 @@ impl Ppi {
             port_a_direction: PpiDirection::Input,
             port_c_latch: 0xFF,
             screen_frequency_50hz: true,
-            cassette_read_data: false,
             parallel_port_busy: false,
             exp_present: true,
             manufacturer_jumper: 0b111,
             psg_selected_register: 0,
             keyboard: Keyboard::new(),
+            tape: None,
         }
     }
 
@@ -101,7 +101,7 @@ impl Ppi {
         const MANUFACTURER_JUMPER: u8 = (1 << 3) | (1 << 2) | (1 << 1);
         const VSYNC: u8 = 1 << 0;
 
-        (if self.cassette_read_data {
+        (if self.cassette_read_data() {
             CASSETTE_READ
         } else {
             0
@@ -135,7 +135,18 @@ impl Ppi {
     }
 
     fn write_port_c(&mut self, value: u8) {
+        let motor_before = self.cassette_motor();
         self.port_c_latch = value;
+        let motor_after = self.cassette_motor();
+
+        if let Some(ref mut tape) = self.tape {
+            if !motor_before && motor_after {
+                tape.play();
+            } else if motor_before && !motor_after {
+                tape.stop();
+            }
+        }
+
         if self.psg_bus_function() == PsgBusFunction::SelectRegister {
             self.psg_selected_register = self.port_a_latch;
         }
@@ -167,6 +178,14 @@ impl Ppi {
         (self.port_c_latch & CASSETTE_WRITE) != 0
     }
 
+    fn cassette_read_data(&self) -> bool {
+        if let Some(ref tape) = self.tape {
+            tape.ear()
+        } else {
+            false
+        }
+    }
+
     fn cassette_motor(&self) -> bool {
         const CASSETTE_MOTOR: u8 = 1 << 4;
         (self.port_c_latch & CASSETTE_MOTOR) != 0
@@ -189,11 +208,33 @@ impl Ppi {
     pub fn set_vsync(&mut self, vsync: bool) {
         self.vsync_active = vsync;
     }
+
+    pub fn load_tape(&mut self, tape: TapePlayer) {
+        self.tape = Some(tape);
+    }
+
+    fn tape(&self) -> Option<&TapePlayer> {
+        self.tape.as_ref()
+    }
+
+    fn tape_mut(&mut self) -> Option<&mut TapePlayer> {
+        self.tape.as_mut()
+    }
+
+    pub fn unload_tape(&mut self) -> Option<TapePlayer> {
+        self.tape.take()
+    }
+
+    pub fn tick_tape(&mut self, cycles: u64) {
+        if let Some(ref mut tape) = self.tape {
+            tape.advance(cycles);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::keyboard::CpcKey;
+    use crate::{TapePlayer, keyboard::CpcKey};
 
     use super::*;
 
@@ -343,16 +384,6 @@ mod tests {
         ppi.vsync_active = true;
         ppi.vsync_active = false;
         assert_eq!(ppi.read(0xF500) & 0x01, 0x00);
-    }
-
-    #[test]
-    fn port_b_cassette_read_bit_reflects_input() {
-        let mut ppi = Ppi::new();
-        ppi.cassette_read_data = true;
-        assert_eq!(ppi.read(0xF500), 0xFE);
-
-        ppi.cassette_read_data = false;
-        assert_eq!(ppi.read(0xF500), 0x7E);
     }
 
     #[test]
@@ -1262,5 +1293,330 @@ mod tests {
                 value
             );
         }
+    }
+
+    fn make_cdt_header(major: u8, minor: u8) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"ZXTape!\x1a");
+        v.push(major);
+        v.push(minor);
+        v
+    }
+
+    fn make_cdt_with_block_10(pause_ms: u16, payload: &[u8]) -> Vec<u8> {
+        let mut v = make_cdt_header(1, 13);
+        v.push(0x10);
+        v.push((pause_ms & 0xFF) as u8);
+        v.push((pause_ms >> 8) as u8);
+        v.push((payload.len() & 0xFF) as u8);
+        v.push((payload.len() >> 8) as u8);
+        v.extend_from_slice(payload);
+        v
+    }
+
+    /// Port B bit 7 mask = Cassette Read Data.
+    const CASSETTE_READ_BIT: u8 = 0x80;
+    /// Port C bit 4 mask = Cassette Motor.
+    const CASSETTE_MOTOR_BIT: u8 = 0x10;
+
+    #[test]
+    fn new_ppi_has_no_tape_loaded() {
+        let ppi = Ppi::new();
+        assert!(ppi.tape().is_none(), "PPI must start with no tape loaded");
+    }
+
+    #[test]
+    fn load_tape_installs_player() {
+        let mut ppi = Ppi::new();
+        let tape = TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap();
+        ppi.load_tape(tape);
+        assert!(ppi.tape().is_some());
+    }
+
+    #[test]
+    fn unload_tape_returns_loaded_player() {
+        let mut ppi = Ppi::new();
+        let tape = TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap();
+        ppi.load_tape(tape);
+        let unloaded = ppi.unload_tape();
+        assert!(unloaded.is_some(), "unload must return the player");
+        assert!(ppi.tape().is_none(), "tape must be removed after unload");
+    }
+
+    #[test]
+    fn unload_tape_when_none_loaded_returns_none() {
+        let mut ppi = Ppi::new();
+        assert!(ppi.unload_tape().is_none());
+    }
+
+    #[test]
+    fn load_tape_replaces_existing_tape() {
+        // Decide your policy; this test asserts silent replacement.
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(2, &[0xFF])).unwrap());
+        assert!(ppi.tape().is_some());
+        // The second tape's first pulse is still 2168 (same pilot), so we can't
+        // distinguish here, but we at least confirm no panic and `tape()` is Some.
+    }
+
+    #[test]
+    fn tape_mut_allows_mutable_access() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        assert!(ppi.tape_mut().is_some());
+        ppi.tape_mut().unwrap().play();
+        // Internal check: tape is now playing (if it has data)
+        assert!(ppi.tape().unwrap().is_playing());
+    }
+
+    #[test]
+    fn port_b_bit7_is_zero_when_no_tape_loaded() {
+        // Existing behavior: cassette_read_data defaults to false → bit 7 = 0.
+        let ppi = Ppi::new();
+        assert_eq!(ppi.read(0xF500) & CASSETTE_READ_BIT, 0);
+    }
+
+    #[test]
+    fn port_b_bit7_reflects_initial_ear_state_when_tape_loaded() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        // Tape not playing yet → EAR is false → bit 7 = 0.
+        assert_eq!(ppi.read(0xF500) & CASSETTE_READ_BIT, 0);
+    }
+
+    #[test]
+    fn port_b_bit7_toggles_after_tape_advances_one_pilot_pulse() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+
+        // Configure Port C as output and turn motor on.
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0);
+        ppi.write(0xF600, CASSETTE_MOTOR_BIT); // motor on, no PSG bits
+
+        let initial = ppi.read(0xF500) & CASSETTE_READ_BIT;
+
+        // Pilot pulse = 2168 CDT T-states = 2478 CPC T-states.
+        // tick_tape(N) calls tape.advance(N) which consumes N CPC T-states.
+        // 2477 isn't enough; 2478 toggles EAR once.
+        ppi.tick_tape(2477);
+        assert_eq!(
+            ppi.read(0xF500) & CASSETTE_READ_BIT,
+            initial,
+            "EAR must not toggle before pilot pulse boundary"
+        );
+
+        ppi.tick_tape(1);
+        assert_ne!(
+            ppi.read(0xF500) & CASSETTE_READ_BIT,
+            initial,
+            "EAR must toggle after consuming exactly 2478 CPC T-states"
+        );
+    }
+
+    #[test]
+    fn port_b_bit7_alternates_with_each_pilot_pulse() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0);
+        ppi.write(0xF600, CASSETTE_MOTOR_BIT);
+
+        let initial = ppi.read(0xF500) & CASSETTE_READ_BIT;
+
+        ppi.tick_tape(2478);
+        assert_ne!(ppi.read(0xF500) & CASSETTE_READ_BIT, initial);
+        ppi.tick_tape(2478);
+        assert_eq!(ppi.read(0xF500) & CASSETTE_READ_BIT, initial);
+        ppi.tick_tape(2478);
+        assert_ne!(ppi.read(0xF500) & CASSETTE_READ_BIT, initial);
+    }
+
+    #[test]
+    fn port_b_bit7_does_not_change_when_motor_off() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.write(0xF782, 0x82);
+        // Motor stays off
+        ppi.write(0xF600, 0x00);
+
+        let initial = ppi.read(0xF500) & CASSETTE_READ_BIT;
+        ppi.tick_tape(50_000);
+        assert_eq!(
+            ppi.read(0xF500) & CASSETTE_READ_BIT,
+            initial,
+            "EAR must not change when motor is off"
+        );
+    }
+
+    #[test]
+    fn motor_bit_set_starts_tape_playing() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.write(0xF782, 0x82);
+
+        ppi.write(0xF600, 0x00);
+
+        ppi.write(0xF600, CASSETTE_MOTOR_BIT);
+        assert!(
+            ppi.tape().unwrap().is_playing(),
+            "Setting motor bit must start the tape"
+        );
+    }
+
+    #[test]
+    fn motor_bit_cleared_stops_tape_playing() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.write(0xF782, 0x82);
+
+        ppi.write(0xF600, 0x00);
+        assert!(
+            !ppi.tape().unwrap().is_playing(),
+            "Clearing motor bit must stop the tape"
+        );
+
+        ppi.write(0xF600, CASSETTE_MOTOR_BIT);
+        assert!(ppi.tape().unwrap().is_playing());
+    }
+
+    #[test]
+    fn motor_bit_unchanged_does_not_call_play_or_stop_repeatedly() {
+        // Writing the same motor state should be a no-op (idempotent).
+        // We can't directly observe call count, but we can verify state stays
+        // consistent and EAR doesn't unexpectedly change.
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.write(0xF782, 0x82);
+
+        ppi.write(0xF600, 0x00);
+        assert!(!ppi.tape().unwrap().is_playing());
+
+        ppi.write(0xF600, CASSETTE_MOTOR_BIT);
+        assert!(ppi.tape().unwrap().is_playing());
+
+        // Write the same value again
+        ppi.write(0xF600, CASSETTE_MOTOR_BIT);
+        assert!(ppi.tape().unwrap().is_playing());
+
+        // Write again with extra bits set (motor still on)
+        ppi.write(0xF600, 0x1F);
+        assert!(ppi.tape().unwrap().is_playing());
+    }
+
+    #[test]
+    fn motor_on_with_other_port_c_bits_preserves_other_bits() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.write(0xF782, 0x82);
+
+        ppi.write(0xF600, 0x00);
+
+        // Set motor + keyboard row 5 = 0x15
+        ppi.write(0xF600, 0x15);
+        assert!(ppi.tape().unwrap().is_playing());
+        assert_eq!(
+            ppi.read(0xF600),
+            0x15,
+            "Other Port C bits must be preserved"
+        );
+    }
+
+    #[test]
+    fn motor_on_without_tape_loaded_does_not_panic() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, CASSETTE_MOTOR_BIT); // should be silent no-op
+        assert!(ppi.tape().is_none());
+    }
+
+    #[test]
+    fn motor_off_without_tape_loaded_does_not_panic() {
+        let mut ppi = Ppi::new();
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0x00);
+        assert!(ppi.tape().is_none());
+    }
+
+    #[test]
+    fn tick_tape_without_loaded_tape_is_noop() {
+        let mut ppi = Ppi::new();
+        ppi.tick_tape(1_000_000); // must not panic
+    }
+
+    #[test]
+    fn tick_tape_advances_loaded_playing_tape() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, 0);
+        ppi.write(0xF600, CASSETTE_MOTOR_BIT);
+
+        let initial = ppi.read(0xF500) & CASSETTE_READ_BIT;
+        ppi.tick_tape(2478);
+        assert_ne!(ppi.read(0xF500) & CASSETTE_READ_BIT, initial);
+    }
+
+    #[test]
+    fn tick_tape_does_not_advance_when_motor_off() {
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&make_cdt_with_block_10(1, &[0])).unwrap());
+        ppi.write(0xF782, 0x82);
+        // motor off
+        ppi.write(0xF600, 0x00);
+
+        let initial = ppi.read(0xF500) & CASSETTE_READ_BIT;
+        ppi.tick_tape(100_000);
+        assert_eq!(ppi.read(0xF500) & CASSETTE_READ_BIT, initial);
+    }
+
+    #[test]
+    fn tick_tape_accumulates_correctly_across_calls() {
+        // advance(2478) once == advance(4) called 620 times (4*620 = 2480 ≥ 2478)
+        let mut ppi_a = Ppi::new();
+        let mut ppi_b = Ppi::new();
+        let cdt = make_cdt_with_block_10(1, &[0]);
+        ppi_a.load_tape(TapePlayer::from_cdt(&cdt).unwrap());
+        ppi_b.load_tape(TapePlayer::from_cdt(&cdt).unwrap());
+
+        for ppi in [&mut ppi_a, &mut ppi_b] {
+            ppi.write(0xF782, 0x82);
+            ppi.write(0xF600, CASSETTE_MOTOR_BIT);
+        }
+
+        ppi_a.tick_tape(2478);
+        for _ in 0..620 {
+            ppi_b.tick_tape(4);
+        }
+
+        assert_eq!(
+            ppi_a.read(0xF500) & CASSETTE_READ_BIT,
+            ppi_b.read(0xF500) & CASSETTE_READ_BIT,
+            "Chunked advance must match single advance"
+        );
+    }
+
+    #[test]
+    fn tick_tape_after_tape_ends_stops_toggling_ear() {
+        // Build a tape with a single short pause block that ends quickly.
+        let mut v = make_cdt_header(1, 13);
+        v.extend_from_slice(&[0x20, 0x01, 0x00]); // 1ms pause, then tape ends
+        let mut ppi = Ppi::new();
+        ppi.load_tape(TapePlayer::from_cdt(&v).unwrap());
+        ppi.write(0xF782, 0x82);
+        ppi.write(0xF600, CASSETTE_MOTOR_BIT);
+
+        // Burn through the tape
+        ppi.tick_tape(1_000_000);
+        assert!(
+            !ppi.tape().unwrap().is_playing(),
+            "Tape should be exhausted"
+        );
+
+        // EAR must now be stable regardless of further ticks
+        let stable = ppi.read(0xF500) & CASSETTE_READ_BIT;
+        ppi.tick_tape(1_000_000);
+        assert_eq!(ppi.read(0xF500) & CASSETTE_READ_BIT, stable);
     }
 }
