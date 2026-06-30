@@ -5,7 +5,11 @@ use iced::{
         key::{Code, Physical},
     },
     time,
-    widget::{Space, button, column, container, image as iced_image, row, text},
+    widget::{
+        Space, button, column, container,
+        image::{self as iced_image, FilterMethod},
+        row, text,
+    },
 };
 use std::{
     path::PathBuf,
@@ -18,6 +22,7 @@ use z80::Z80;
 
 const ROM_BYTES_464_MODEL: &[u8] = include_bytes!("../../../roms/cpc464.rom");
 
+const SIDEBAR_WIDTH: f32 = 200.0;
 const TICKS_PER_LINE: u64 = 64;
 const LINES_PER_FRAME: u64 = 312;
 const TICKS_PER_FRAME: u64 = TICKS_PER_LINE * LINES_PER_FRAME;
@@ -26,7 +31,7 @@ pub fn main() -> iced::Result {
     iced::application(EmulatorApp::new, EmulatorApp::update, EmulatorApp::view)
         .subscription(EmulatorApp::subscription)
         .window_size((
-            WINDOW_WIDTH as f32 * 2.0 + 200.0,
+            WINDOW_WIDTH as f32 * 2.0 + SIDEBAR_WIDTH,
             WINDOW_HEIGHT as f32 * 4.0,
         ))
         .title(EmulatorApp::title)
@@ -60,6 +65,7 @@ struct EmulatorApp {
     shared_state: Arc<Mutex<SharedState>>,
     command_tx: std::sync::mpsc::Sender<EmuCommand>,
     unlimited_fps: bool,
+    filter_method: FilterMethod,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +77,7 @@ enum Message {
     ReloadTapePressed,
     RestartPressed,
     ToggleFpsPressed,
+    ToggleFilterMethod,
     EventProcessed(iced::Event),
 }
 
@@ -94,6 +101,7 @@ impl EmulatorApp {
                 shared_state,
                 command_tx,
                 unlimited_fps: false,
+                filter_method: FilterMethod::Nearest,
             },
             Command::none(),
         )
@@ -134,6 +142,12 @@ impl EmulatorApp {
             Message::ToggleFpsPressed => {
                 self.unlimited_fps = !self.unlimited_fps;
                 let _ = self.command_tx.send(EmuCommand::ToggleFpsLimit);
+            }
+            Message::ToggleFilterMethod => {
+                self.filter_method = match self.filter_method {
+                    FilterMethod::Nearest => FilterMethod::Linear,
+                    FilterMethod::Linear => FilterMethod::Nearest,
+                };
             }
             Message::EventProcessed(iced::Event::Keyboard(event)) => match event {
                 keyboard::Event::KeyPressed { physical_key, .. } => {
@@ -202,10 +216,17 @@ impl EmulatorApp {
             }))
             .width(Length::Fill)
             .on_press(Message::ToggleFpsPressed),
+            Space::new().height(Length::Fixed(20.0)),
+            button(text(match self.filter_method {
+                FilterMethod::Nearest => "Filter: Nearest",
+                FilterMethod::Linear => "Filter: Linear",
+            }))
+            .width(Length::Fill)
+            .on_press(Message::ToggleFilterMethod),
             Space::new().height(Length::Fill),
             text(format!("FPS: {:.1}", current_fps)).size(14),
         ]
-        .width(Length::Fixed(200.0))
+        .width(Length::Fixed(SIDEBAR_WIDTH))
         .padding(15)
         .spacing(10);
 
@@ -217,7 +238,8 @@ impl EmulatorApp {
             iced_image::Image::new(handle)
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .content_fit(ContentFit::Fill),
+                .content_fit(ContentFit::Fill)
+                .filter_method(self.filter_method),
         )
         .width(Length::Fill)
         .height(Length::Fill)
@@ -247,8 +269,6 @@ fn run_emulator_thread(
     let mut cpu = Z80::new();
 
     let mut tape_bytes: Vec<u8> = Vec::new();
-    let mut pressed_keys: Vec<CpcKey> = Vec::new();
-
     let mut unlimited_fps = false;
     let mut frame_count = 0;
     let mut last_fps_update = Instant::now();
