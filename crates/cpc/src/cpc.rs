@@ -2,7 +2,7 @@ use crate::{Crtc, GateArray, Ppi, Video, memory::CpcMemory};
 use z80::Bus;
 
 pub struct Cpc {
-    rom: [u8; 0x8000], // 32 KB
+    rom: Box<[u8; 0x8000]>, // 32 KB
     memory: CpcMemory,
     // Peripherals
     gate_array: GateArray,
@@ -14,7 +14,7 @@ pub struct Cpc {
 impl Cpc {
     pub fn new(memory: CpcMemory, rom: &[u8]) -> Self {
         assert_eq!(rom.len(), 0x8000, "ROM length is supposed to be 32KB");
-        let mut rom_clone = [0; 0x8000];
+        let mut rom_clone = Box::new([0; 0x8000]);
         rom_clone.copy_from_slice(rom);
 
         Self {
@@ -33,6 +33,10 @@ impl Cpc {
 
     pub fn gate_array(&self) -> &GateArray {
         &self.gate_array
+    }
+
+    pub fn ppi(&self) -> &Ppi {
+        &self.ppi
     }
 
     pub fn ppi_mut(&mut self) -> &mut Ppi {

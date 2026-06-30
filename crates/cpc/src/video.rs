@@ -4,18 +4,18 @@ pub const WINDOW_WIDTH: usize = 640;
 pub const WINDOW_HEIGHT: usize = 200;
 
 pub struct Video {
-    buffer: [u32; WINDOW_HEIGHT * WINDOW_WIDTH],
+    buffer: Box<[u32; WINDOW_HEIGHT * WINDOW_WIDTH]>,
 }
 
 impl Video {
     pub fn new() -> Self {
         Self {
-            buffer: [0; WINDOW_HEIGHT * WINDOW_WIDTH],
+            buffer: Box::new([0; WINDOW_HEIGHT * WINDOW_WIDTH]),
         }
     }
 
     pub fn buffer(&self) -> &[u32] {
-        &self.buffer
+        self.buffer.as_ref()
     }
 
     pub fn clear(&mut self) {

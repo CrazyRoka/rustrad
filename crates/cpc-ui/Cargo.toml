@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-minifb = "0.28.0"
 z80 = { path = "../z80" }
 cpc = { path = "../cpc" }
+rfd = "0.17.2"
+iced = { version = "0.14", features = ["image", "tokio"] }

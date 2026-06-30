@@ -1,67 +1,309 @@
-use std::{env::args, fs, process::exit, time::Instant};
+use iced::{
+    ContentFit, Element, Length, Subscription, Task as Command,
+    keyboard::{
+        self,
+        key::{Code, Physical},
+    },
+    time,
+    widget::{Space, button, column, container, image as iced_image, row, text},
+};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
-use cpc::{Cpc, CpcKey, CpcMemory, GateArray, Ppi, TapePlayer, Video, WINDOW_HEIGHT, WINDOW_WIDTH};
-use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
+use cpc::{Cpc, CpcKey, CpcMemory, TapePlayer, WINDOW_HEIGHT, WINDOW_WIDTH};
 use z80::Z80;
 
-// TODO: Adjust these values
+const ROM_BYTES_464_MODEL: &[u8] = include_bytes!("../../../roms/cpc464.rom");
+
 const TICKS_PER_LINE: u64 = 64;
 const LINES_PER_FRAME: u64 = 312;
 const TICKS_PER_FRAME: u64 = TICKS_PER_LINE * LINES_PER_FRAME;
 
-const ROM_BYTES_464_MODEL: &[u8] = include_bytes!("../../../roms/cpc464.rom");
+pub fn main() -> iced::Result {
+    iced::application(EmulatorApp::new, EmulatorApp::update, EmulatorApp::view)
+        .subscription(EmulatorApp::subscription)
+        .window_size((
+            WINDOW_WIDTH as f32 * 2.0 + 200.0,
+            WINDOW_HEIGHT as f32 * 4.0,
+        ))
+        .title(EmulatorApp::title)
+        .run()
+}
 
-fn main() {
-    if args().len() != 2 {
-        eprintln!("Expected tape argument");
-        exit(0);
+// -----------------------------------------------------------------------------
+// Shared State between Emulator Thread and UI
+// -----------------------------------------------------------------------------
+struct SharedState {
+    frame_buffer: Vec<u8>, // RGBA8 buffer for Iced Image
+    current_fps: f32,
+    tape_playing: bool,
+}
+
+// Commands sent from UI -> Emulator Thread
+enum EmuCommand {
+    LoadTape(PathBuf),
+    ToggleTape,
+    ReloadTape,
+    Restart,
+    ToggleFpsLimit,
+    KeyDown(CpcKey),
+    KeyUp(CpcKey),
+}
+
+// -----------------------------------------------------------------------------
+// Iced UI Application
+// -----------------------------------------------------------------------------
+struct EmulatorApp {
+    shared_state: Arc<Mutex<SharedState>>,
+    command_tx: std::sync::mpsc::Sender<EmuCommand>,
+    unlimited_fps: bool,
+}
+
+#[derive(Debug, Clone)]
+enum Message {
+    Tick,
+    LoadTapePressed,
+    TapeLoaded(Option<PathBuf>),
+    ToggleTapePressed,
+    ReloadTapePressed,
+    RestartPressed,
+    ToggleFpsPressed,
+    EventProcessed(iced::Event),
+}
+
+impl EmulatorApp {
+    fn new() -> (Self, Command<Message>) {
+        let (command_tx, command_rx) = std::sync::mpsc::channel();
+        let shared_state = Arc::new(Mutex::new(SharedState {
+            frame_buffer: vec![0; WINDOW_WIDTH * WINDOW_HEIGHT * 4],
+            current_fps: 0.0,
+            tape_playing: false,
+        }));
+
+        // Spawn Emulator Thread
+        std::thread::spawn({
+            let state_clone = Arc::clone(&shared_state);
+            move || run_emulator_thread(command_rx, state_clone)
+        });
+
+        (
+            Self {
+                shared_state,
+                command_tx,
+                unlimited_fps: false,
+            },
+            Command::none(),
+        )
     }
-    let tape_path = args().nth(1).unwrap();
-    let tape_bytes = fs::read(tape_path).expect("Failed to load tape");
-    let tape = TapePlayer::from_cdt(&tape_bytes).expect("Failed to create tape");
 
+    fn title(&self) -> String {
+        let state = self.shared_state.lock().unwrap();
+        format!("Amstrad CPC Emulator - FPS: {:.1}", state.current_fps)
+    }
+
+    fn update(&mut self, message: Message) -> Command<Message> {
+        match message {
+            Message::LoadTapePressed => {
+                return Command::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter("Tape Files", &["cdt"])
+                            .pick_file()
+                            .await
+                            .map(|handle| handle.path().to_path_buf())
+                    },
+                    Message::TapeLoaded,
+                );
+            }
+            Message::TapeLoaded(Some(path)) => {
+                let _ = self.command_tx.send(EmuCommand::LoadTape(path));
+            }
+            Message::TapeLoaded(None) => {}
+            Message::ToggleTapePressed => {
+                let _ = self.command_tx.send(EmuCommand::ToggleTape);
+            }
+            Message::ReloadTapePressed => {
+                let _ = self.command_tx.send(EmuCommand::ReloadTape);
+            }
+            Message::RestartPressed => {
+                let _ = self.command_tx.send(EmuCommand::Restart);
+            }
+            Message::ToggleFpsPressed => {
+                self.unlimited_fps = !self.unlimited_fps;
+                let _ = self.command_tx.send(EmuCommand::ToggleFpsLimit);
+            }
+            Message::EventProcessed(iced::Event::Keyboard(event)) => match event {
+                keyboard::Event::KeyPressed { physical_key, .. } => {
+                    if let Physical::Code(code) = physical_key {
+                        // F12 toggles FPS limit
+                        if code == Code::F12 {
+                            self.unlimited_fps = !self.unlimited_fps;
+                            let _ = self.command_tx.send(EmuCommand::ToggleFpsLimit);
+                        } else if let Some(c_key) = map_keycode(code) {
+                            let _ = self.command_tx.send(EmuCommand::KeyDown(c_key));
+                        }
+                    }
+                }
+                keyboard::Event::KeyReleased { physical_key, .. } => {
+                    if let Physical::Code(code) = physical_key {
+                        if code != Code::F12 {
+                            if let Some(c_key) = map_keycode(code) {
+                                let _ = self.command_tx.send(EmuCommand::KeyUp(c_key));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        Command::none()
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        let (current_fps, tape_playing, frame_data) = {
+            let state = self.shared_state.lock().unwrap();
+            (
+                state.current_fps,
+                state.tape_playing,
+                state.frame_buffer.clone(),
+            )
+        };
+
+        // Left Sidebar Control Panel
+        let sidebar = column![
+            text("Amstrad CPC 464").size(24),
+            Space::new().height(Length::Fixed(20.0)),
+            button(text("Load CDT File..."))
+                .width(Length::Fill)
+                .on_press(Message::LoadTapePressed),
+            button(text(if tape_playing {
+                "Stop Tape"
+            } else {
+                "Play Tape"
+            }))
+            .width(Length::Fill)
+            .on_press(Message::ToggleTapePressed),
+            button(text("Rewind Tape"))
+                .width(Length::Fill)
+                .on_press(Message::ReloadTapePressed),
+            Space::new().height(Length::Fixed(20.0)),
+            button(text("Restart"))
+                .width(Length::Fill)
+                .on_press(Message::RestartPressed),
+            Space::new().height(Length::Fixed(20.0)),
+            button(text(if self.unlimited_fps {
+                "Lock FPS (50Hz)"
+            } else {
+                "Unlock FPS"
+            }))
+            .width(Length::Fill)
+            .on_press(Message::ToggleFpsPressed),
+            Space::new().height(Length::Fill),
+            text(format!("FPS: {:.1}", current_fps)).size(14),
+        ]
+        .width(Length::Fixed(200.0))
+        .padding(15)
+        .spacing(10);
+
+        // Emulator Screen
+        let handle =
+            iced_image::Handle::from_rgba(WINDOW_WIDTH as u32, WINDOW_HEIGHT as u32, frame_data);
+
+        let screen = container(
+            iced_image::Image::new(handle)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .content_fit(ContentFit::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(iced::alignment::Alignment::Center)
+        .align_y(iced::alignment::Alignment::Center);
+
+        row![sidebar, screen].into()
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        Subscription::batch([
+            time::every(Duration::from_millis(16)).map(|_| Message::Tick), // ~60Hz screen refresh
+            iced::event::listen().map(Message::EventProcessed),
+        ])
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Core Emulator Background Thread
+// -----------------------------------------------------------------------------
+fn run_emulator_thread(
+    rx: std::sync::mpsc::Receiver<EmuCommand>,
+    shared_state: Arc<Mutex<SharedState>>,
+) {
     let memory = CpcMemory::new_64k();
     let mut bus = Cpc::new(memory, ROM_BYTES_464_MODEL);
-    bus.ppi_mut().load_tape(tape);
     let mut cpu = Z80::new();
 
-    let mut window = match Window::new(
-        "Amstrad CPC 464 Emulator",
-        WINDOW_WIDTH,
-        WINDOW_HEIGHT,
-        WindowOptions {
-            scale: Scale::X2,
-            ..WindowOptions::default()
-        },
-    ) {
-        Ok(win) => win,
-        Err(err) => {
-            panic!("Failed to create a window: {}", err);
-        }
-    };
-    window.set_target_fps(50);
+    let mut tape_bytes: Vec<u8> = Vec::new();
+    let mut pressed_keys: Vec<CpcKey> = Vec::new();
+
     let mut unlimited_fps = false;
-    let mut last_fps_update = Instant::now();
     let mut frame_count = 0;
-    let mut ticks_count = 0;
+    let mut last_fps_update = Instant::now();
+    let mut last_frame_time = Instant::now();
+    let mut ticks_count: u64 = 0;
 
-    while window.is_open() {
-        bus.ppi_mut().keyboard_mut().reset();
-        for key in window.get_keys() {
-            if let Some(spectrum_key) = convert_to_cpc_key(key) {
-                bus.ppi_mut().keyboard_mut().press_key(&spectrum_key);
+    loop {
+        // Handle UI Commands
+        while let Ok(cmd) = rx.try_recv() {
+            match cmd {
+                EmuCommand::LoadTape(path) => {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        tape_bytes = bytes;
+                        if let Ok(tape) = TapePlayer::from_cdt(&tape_bytes) {
+                            bus.ppi_mut().load_tape(tape);
+                        }
+                    }
+                }
+                EmuCommand::ReloadTape => {
+                    if let Ok(tape) = TapePlayer::from_cdt(&tape_bytes) {
+                        bus.ppi_mut().load_tape(tape);
+                    }
+                }
+                EmuCommand::ToggleTape => {
+                    if let Some(tape) = bus.ppi_mut().tape_mut() {
+                        if tape.is_playing() {
+                            tape.stop();
+                        } else {
+                            tape.play();
+                        }
+                    }
+                }
+                EmuCommand::Restart => {
+                    let memory = CpcMemory::new_64k();
+                    bus = Cpc::new(memory, ROM_BYTES_464_MODEL);
+                    cpu = Z80::new();
+                    ticks_count = 0;
+                    // Reload tape if we had one
+                    if !tape_bytes.is_empty() {
+                        if let Ok(tape) = TapePlayer::from_cdt(&tape_bytes) {
+                            bus.ppi_mut().load_tape(tape);
+                        }
+                    }
+                }
+                EmuCommand::ToggleFpsLimit => unlimited_fps = !unlimited_fps,
+                EmuCommand::KeyDown(k) => {
+                    bus.ppi_mut().keyboard_mut().press_key(&k);
+                }
+                EmuCommand::KeyUp(k) => {
+                    bus.ppi_mut().keyboard_mut().release_key(&k);
+                }
             }
         }
 
-        if window.is_key_pressed(Key::F12, KeyRepeat::No) {
-            unlimited_fps = !unlimited_fps;
-            if unlimited_fps {
-                window.set_target_fps(0);
-            } else {
-                window.set_target_fps(50);
-            }
-        }
-
+        // Execute 1 frame worth of cycles
         loop {
             let cycles = cpu.execute(&mut bus);
             let ticks = (cycles + 3) / 4;
@@ -80,108 +322,145 @@ fn main() {
             }
         }
 
-        if let Err(err) =
-            window.update_with_buffer(bus.video().buffer(), WINDOW_WIDTH, WINDOW_HEIGHT)
+        // Update Shared Framebuffer
         {
-            panic!("Failed to update window: {}", err);
+            let mut state = shared_state.lock().unwrap();
+            state.frame_buffer = bus
+                .video()
+                .buffer()
+                .iter()
+                .flat_map(|rgba| rgba.to_be_bytes())
+                .collect();
+            // NOTE: Adjust based on your CPC PPI/TapePlayer API.
+            state.tape_playing = bus.ppi().tape().map_or(false, |tape| tape.is_playing());
         }
 
         frame_count += 1;
         let elapsed = last_fps_update.elapsed();
         if elapsed.as_secs_f32() >= 0.5 {
             let fps = frame_count as f32 / elapsed.as_secs_f32();
-            let mode_str = if unlimited_fps {
-                "Unlimited"
-            } else {
-                "Locked (50Hz)"
-            };
-
-            window.set_title(&format!(
-                "Amstrad CPC 464 | FPS: {:.1} | Mode: {} [Press F12 to Toggle]",
-                fps, mode_str
-            ));
-
+            shared_state.lock().unwrap().current_fps = fps;
             frame_count = 0;
             last_fps_update = Instant::now();
+        }
+
+        // Limit FPS to 50Hz if requested
+        if !unlimited_fps {
+            let target_frame_time = Duration::from_millis(20); // 50 FPS
+            let time_taken = last_frame_time.elapsed();
+            if time_taken < target_frame_time {
+                std::thread::sleep(target_frame_time - time_taken);
+            }
+            last_frame_time = Instant::now();
+        } else {
+            last_frame_time = Instant::now();
         }
     }
 }
 
-fn convert_to_cpc_key(key: Key) -> Option<CpcKey> {
-    match key {
-        Key::NumPadDot => Some(CpcKey::Fdot),
-        Key::NumPadEnter => Some(CpcKey::Enter),
-        Key::NumPad3 | Key::F3 => Some(CpcKey::F3),
-        Key::NumPad6 | Key::F6 => Some(CpcKey::F6),
-        Key::NumPad9 | Key::F9 => Some(CpcKey::F9),
-        Key::Down => Some(CpcKey::CursorDown),
-        Key::Right => Some(CpcKey::CursorRight),
-        Key::Up => Some(CpcKey::CursorUp),
-        Key::NumPad0 | Key::Insert => Some(CpcKey::F0),
-        Key::NumPad2 | Key::F2 => Some(CpcKey::F2),
-        Key::NumPad1 | Key::F1 => Some(CpcKey::F1),
-        Key::NumPad5 | Key::F5 => Some(CpcKey::F5),
-        Key::NumPad8 | Key::F8 => Some(CpcKey::F8),
-        Key::NumPad7 | Key::F7 => Some(CpcKey::F7),
-        Key::End | Key::PageDown => Some(CpcKey::Copy),
-        Key::Left => Some(CpcKey::CursorLeft),
-        Key::LeftCtrl | Key::RightCtrl => Some(CpcKey::Ctrl),
-        Key::Backslash => Some(CpcKey::Backslash),
-        Key::LeftShift | Key::RightShift => Some(CpcKey::Shift),
-        Key::NumPad4 | Key::F4 => Some(CpcKey::F4),
-        Key::RightBracket => Some(CpcKey::ClosedBracket),
-        Key::Enter => Some(CpcKey::Return),
-        Key::LeftBracket => Some(CpcKey::OpenBracket),
-        Key::Home | Key::PageUp => Some(CpcKey::Clr),
-        Key::Comma => Some(CpcKey::Comma),
-        Key::Slash => Some(CpcKey::Slash),
-        Key::Semicolon => Some(CpcKey::Colon),
-        Key::Apostrophe => Some(CpcKey::Semicolon),
-        Key::P => Some(CpcKey::P),
-        Key::F10 => Some(CpcKey::At),
-        Key::Minus => Some(CpcKey::Minus),
-        Key::Equal => Some(CpcKey::Caret),
-        Key::Period => Some(CpcKey::Dot),
-        Key::M => Some(CpcKey::M),
-        Key::K => Some(CpcKey::K),
-        Key::L => Some(CpcKey::L),
-        Key::I => Some(CpcKey::I),
-        Key::O => Some(CpcKey::O),
-        Key::Key9 => Some(CpcKey::Nine),
-        Key::Key0 => Some(CpcKey::Zero),
-        Key::Space => Some(CpcKey::Space),
-        Key::N => Some(CpcKey::N),
-        Key::J => Some(CpcKey::J),
-        Key::H => Some(CpcKey::H),
-        Key::Y => Some(CpcKey::Y),
-        Key::U => Some(CpcKey::U),
-        Key::Key7 => Some(CpcKey::Seven),
-        Key::Key8 => Some(CpcKey::Eight),
-        Key::V => Some(CpcKey::V),
-        Key::B => Some(CpcKey::B),
-        Key::F => Some(CpcKey::F),
-        Key::G => Some(CpcKey::G),
-        Key::T => Some(CpcKey::T),
-        Key::R => Some(CpcKey::R),
-        Key::Key5 => Some(CpcKey::Five),
-        Key::Key6 => Some(CpcKey::Six),
-        Key::X => Some(CpcKey::X),
-        Key::C => Some(CpcKey::C),
-        Key::D => Some(CpcKey::D),
-        Key::S => Some(CpcKey::S),
-        Key::W => Some(CpcKey::W),
-        Key::E => Some(CpcKey::E),
-        Key::Key3 => Some(CpcKey::Three),
-        Key::Key4 => Some(CpcKey::Four),
-        Key::Z => Some(CpcKey::Z),
-        Key::CapsLock => Some(CpcKey::CapsLock),
-        Key::A => Some(CpcKey::A),
-        Key::Tab => Some(CpcKey::Tab),
-        Key::Q => Some(CpcKey::Q),
-        Key::Escape => Some(CpcKey::Esc),
-        Key::Key2 => Some(CpcKey::Two),
-        Key::Key1 => Some(CpcKey::One),
-        Key::Backspace => Some(CpcKey::Del),
+// -----------------------------------------------------------------------------
+// Keyboard Mapping
+// -----------------------------------------------------------------------------
+fn map_keycode(code: Code) -> Option<CpcKey> {
+    match code {
+        // Function keys (CPC soft keys)
+        Code::F1 => Some(CpcKey::F1),
+        Code::F2 => Some(CpcKey::F2),
+        Code::F3 => Some(CpcKey::F3),
+        Code::F4 => Some(CpcKey::F4),
+        Code::F5 => Some(CpcKey::F5),
+        Code::F6 => Some(CpcKey::F6),
+        Code::F7 => Some(CpcKey::F7),
+        Code::F8 => Some(CpcKey::F8),
+        Code::F9 => Some(CpcKey::F9),
+        Code::F10 => Some(CpcKey::At),
+
+        // Numpad keys mapping to CPC function keys
+        Code::Numpad0 | Code::Insert => Some(CpcKey::F0),
+        Code::Numpad1 => Some(CpcKey::F1),
+        Code::Numpad2 => Some(CpcKey::F2),
+        Code::Numpad3 => Some(CpcKey::F3),
+        Code::Numpad4 => Some(CpcKey::F4),
+        Code::Numpad5 => Some(CpcKey::F5),
+        Code::Numpad6 => Some(CpcKey::F6),
+        Code::Numpad7 => Some(CpcKey::F7),
+        Code::Numpad8 => Some(CpcKey::F8),
+        Code::Numpad9 => Some(CpcKey::F9),
+        Code::NumpadDecimal => Some(CpcKey::Fdot),
+        Code::NumpadEnter => Some(CpcKey::Enter),
+
+        // Cursor keys
+        Code::ArrowUp => Some(CpcKey::CursorUp),
+        Code::ArrowDown => Some(CpcKey::CursorDown),
+        Code::ArrowLeft => Some(CpcKey::CursorLeft),
+        Code::ArrowRight => Some(CpcKey::CursorRight),
+
+        // Special keys
+        Code::End | Code::PageDown => Some(CpcKey::Copy),
+        Code::Home | Code::PageUp => Some(CpcKey::Clr),
+        Code::Enter => Some(CpcKey::Return),
+        Code::Backspace => Some(CpcKey::Del),
+        Code::Escape => Some(CpcKey::Esc),
+        Code::Tab => Some(CpcKey::Tab),
+        Code::CapsLock => Some(CpcKey::CapsLock),
+        Code::Space => Some(CpcKey::Space),
+
+        // Modifiers
+        Code::ShiftLeft | Code::ShiftRight => Some(CpcKey::Shift),
+        Code::ControlLeft | Code::ControlRight => Some(CpcKey::Ctrl),
+
+        // Punctuation
+        Code::Minus => Some(CpcKey::Minus),
+        Code::Equal => Some(CpcKey::Caret),
+        Code::BracketLeft => Some(CpcKey::OpenBracket),
+        Code::BracketRight => Some(CpcKey::ClosedBracket),
+        Code::Backslash => Some(CpcKey::Backslash),
+        Code::Semicolon => Some(CpcKey::Colon),
+        Code::Quote => Some(CpcKey::Semicolon),
+        Code::Comma => Some(CpcKey::Comma),
+        Code::Period => Some(CpcKey::Dot),
+        Code::Slash => Some(CpcKey::Slash),
+
+        // Digits
+        Code::Digit0 => Some(CpcKey::Zero),
+        Code::Digit1 => Some(CpcKey::One),
+        Code::Digit2 => Some(CpcKey::Two),
+        Code::Digit3 => Some(CpcKey::Three),
+        Code::Digit4 => Some(CpcKey::Four),
+        Code::Digit5 => Some(CpcKey::Five),
+        Code::Digit6 => Some(CpcKey::Six),
+        Code::Digit7 => Some(CpcKey::Seven),
+        Code::Digit8 => Some(CpcKey::Eight),
+        Code::Digit9 => Some(CpcKey::Nine),
+
+        // Letters
+        Code::KeyA => Some(CpcKey::A),
+        Code::KeyB => Some(CpcKey::B),
+        Code::KeyC => Some(CpcKey::C),
+        Code::KeyD => Some(CpcKey::D),
+        Code::KeyE => Some(CpcKey::E),
+        Code::KeyF => Some(CpcKey::F),
+        Code::KeyG => Some(CpcKey::G),
+        Code::KeyH => Some(CpcKey::H),
+        Code::KeyI => Some(CpcKey::I),
+        Code::KeyJ => Some(CpcKey::J),
+        Code::KeyK => Some(CpcKey::K),
+        Code::KeyL => Some(CpcKey::L),
+        Code::KeyM => Some(CpcKey::M),
+        Code::KeyN => Some(CpcKey::N),
+        Code::KeyO => Some(CpcKey::O),
+        Code::KeyP => Some(CpcKey::P),
+        Code::KeyQ => Some(CpcKey::Q),
+        Code::KeyR => Some(CpcKey::R),
+        Code::KeyS => Some(CpcKey::S),
+        Code::KeyT => Some(CpcKey::T),
+        Code::KeyU => Some(CpcKey::U),
+        Code::KeyV => Some(CpcKey::V),
+        Code::KeyW => Some(CpcKey::W),
+        Code::KeyX => Some(CpcKey::X),
+        Code::KeyY => Some(CpcKey::Y),
+        Code::KeyZ => Some(CpcKey::Z),
+
         _ => None,
     }
 }

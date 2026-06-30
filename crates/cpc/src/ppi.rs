@@ -219,11 +219,11 @@ impl Ppi {
         self.tape = Some(tape);
     }
 
-    fn tape(&self) -> Option<&TapePlayer> {
+    pub fn tape(&self) -> Option<&TapePlayer> {
         self.tape.as_ref()
     }
 
-    fn tape_mut(&mut self) -> Option<&mut TapePlayer> {
+    pub fn tape_mut(&mut self) -> Option<&mut TapePlayer> {
         self.tape.as_mut()
     }
 
