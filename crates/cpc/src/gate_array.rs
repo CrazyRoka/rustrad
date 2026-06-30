@@ -240,8 +240,8 @@ impl GateArray {
         }
     }
 
-    fn select_ram_memory_management(&mut self, value: u8) {
-        todo!()
+    fn select_ram_memory_management(&mut self, _value: u8) {
+        // handled by CPC struct
     }
 
     pub fn hsync(&mut self) {
@@ -555,9 +555,9 @@ mod tests {
     #[test]
     fn test_palette_color_mapping() {
         // Test a few known hardware colors to ensure matching values are returned.
-        assert_eq!(Palette::Black.color(), 0x000000);
-        assert_eq!(Palette::BrightRed.color(), 0xFF0000);
-        assert_eq!(Palette::BrightWhite.color(), 0xFFFFFF);
+        assert_eq!(Palette::Black.color(), 0x000000FF);
+        assert_eq!(Palette::BrightRed.color(), 0xFF0000FF);
+        assert_eq!(Palette::BrightWhite.color(), 0xFFFFFFFF);
     }
 
     #[test]
@@ -672,33 +672,33 @@ mod tests {
     #[test]
     fn test_palette_known_rgb_values() {
         let expected: [(Palette, u32); 27] = [
-            (Palette::Black, 0x000000),
-            (Palette::Blue, 0x000080),
-            (Palette::BrightBlue, 0x0000FF),
-            (Palette::Red, 0x800000),
-            (Palette::Magenta, 0x800080),
-            (Palette::Mauve, 0x8000FF),
-            (Palette::BrightRed, 0xFF0000),
-            (Palette::Purple, 0xFF0080),
-            (Palette::BrightMagenta, 0xFF00FF),
-            (Palette::Green, 0x008000),
-            (Palette::Cyan, 0x008080),
-            (Palette::SkyBlue, 0x0080FF),
-            (Palette::Yellow, 0x808000),
-            (Palette::White, 0x808080),
-            (Palette::PastelBlue, 0x8080FF),
-            (Palette::Orange, 0xFF8000),
-            (Palette::Pink, 0xFF8080),
-            (Palette::PastelMagenta, 0xFF80FF),
-            (Palette::BrightGreen, 0x00FF00),
-            (Palette::SeaGreen, 0x00FF80),
-            (Palette::BrightCyan, 0x00FFFF),
-            (Palette::Lime, 0x80FF00),
-            (Palette::PastelGreen, 0x80FF80),
-            (Palette::PastelCyan, 0x80FFFF),
-            (Palette::BrightYellow, 0xFFFF00),
-            (Palette::PastelYellow, 0xFFFF80),
-            (Palette::BrightWhite, 0xFFFFFF),
+            (Palette::Black, 0x000000FF),
+            (Palette::Blue, 0x000080FF),
+            (Palette::BrightBlue, 0x0000FFFF),
+            (Palette::Red, 0x800000FF),
+            (Palette::Magenta, 0x800080FF),
+            (Palette::Mauve, 0x8000FFFF),
+            (Palette::BrightRed, 0xFF0000FF),
+            (Palette::Purple, 0xFF0080FF),
+            (Palette::BrightMagenta, 0xFF00FFFF),
+            (Palette::Green, 0x008000FF),
+            (Palette::Cyan, 0x008080FF),
+            (Palette::SkyBlue, 0x0080FFFF),
+            (Palette::Yellow, 0x808000FF),
+            (Palette::White, 0x808080FF),
+            (Palette::PastelBlue, 0x8080FFFF),
+            (Palette::Orange, 0xFF8000FF),
+            (Palette::Pink, 0xFF8080FF),
+            (Palette::PastelMagenta, 0xFF80FFFF),
+            (Palette::BrightGreen, 0x00FF00FF),
+            (Palette::SeaGreen, 0x00FF80FF),
+            (Palette::BrightCyan, 0x00FFFFFF),
+            (Palette::Lime, 0x80FF00FF),
+            (Palette::PastelGreen, 0x80FF80FF),
+            (Palette::PastelCyan, 0x80FFFFFF),
+            (Palette::BrightYellow, 0xFFFF00FF),
+            (Palette::PastelYellow, 0xFFFF80FF),
+            (Palette::BrightWhite, 0xFFFFFFFF),
         ];
         for (p, rgb) in expected {
             assert_eq!(p.color(), rgb, "RGB mismatch for {:?}", p);

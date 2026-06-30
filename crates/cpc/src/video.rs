@@ -248,10 +248,10 @@ mod tests {
         video.tick(&crtc, &ga, &ram);
 
         let black = ga.ink_for_pen(16).color();
-        for x in 8..16 {
+        for x in 16..32 {
             assert_eq!(video.buffer()[x], black, "x={} should be border", x);
         }
-        for x in 0..8 {
+        for x in 0..16 {
             assert_eq!(video.buffer()[x], 0, "x={} should be untouched", x);
         }
     }

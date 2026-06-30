@@ -1,9 +1,16 @@
-use crate::{Crtc, GateArray, Ppi, Video, memory::CpcMemory};
+use crate::{
+    Crtc, GateArray, Ppi, Video,
+    memory::{CpcMemory, MemoryReader},
+};
 use z80::Bus;
 
 pub struct Cpc {
-    rom: Box<[u8; 0x8000]>, // 32 KB
+    lower_rom: Box<[u8; 0x4000]>, // 16 KB
+    // TODO: handle arbitrary number of rows
+    upper_roms: Box<[[u8; 0x4000]; 2]>, // 16x2 KB
+    selected_rom: u8,
     memory: CpcMemory,
+    memory_banking_selection: u8,
     // Peripherals
     gate_array: GateArray,
     ppi: Ppi,
@@ -12,14 +19,40 @@ pub struct Cpc {
 }
 
 impl Cpc {
-    pub fn new(memory: CpcMemory, rom: &[u8]) -> Self {
+    pub fn new_464(rom: &[u8]) -> Self {
         assert_eq!(rom.len(), 0x8000, "ROM length is supposed to be 32KB");
-        let mut rom_clone = Box::new([0; 0x8000]);
-        rom_clone.copy_from_slice(rom);
+        let mut lower_rom = Box::new([0; 0x4000]);
+        lower_rom.copy_from_slice(&rom[0..0x4000]);
+        let mut upper_roms = Box::new([[0; 0x4000]; 2]);
+        upper_roms[0].copy_from_slice(&rom[0x4000..0x8000]);
 
         Self {
-            rom: rom_clone,
-            memory,
+            lower_rom,
+            upper_roms,
+            selected_rom: 0,
+            memory: CpcMemory::new_64k(),
+            memory_banking_selection: 0,
+            gate_array: GateArray::new(),
+            ppi: Ppi::new(),
+            crtc: Crtc::new(),
+            video: Video::new(),
+        }
+    }
+
+    pub fn new_6128(rom: &[u8]) -> Self {
+        assert_eq!(rom.len(), 0xC000, "ROM length is supposed to be 48KB");
+        let mut lower_rom = Box::new([0; 0x4000]);
+        lower_rom.copy_from_slice(&rom[0..0x4000]);
+        let mut upper_roms = Box::new([[0xFF; 0x4000]; 2]);
+        upper_roms[0].copy_from_slice(&rom[0x4000..0x8000]);
+        upper_roms[1].copy_from_slice(&rom[0x8000..0xC000]);
+
+        Self {
+            lower_rom,
+            upper_roms,
+            selected_rom: 0,
+            memory: CpcMemory::new_128k(),
+            memory_banking_selection: 0,
             gate_array: GateArray::new(),
             ppi: Ppi::new(),
             crtc: Crtc::new(),
@@ -74,29 +107,36 @@ impl Cpc {
 
     /// Reads raw RAM, bypassing ROM mapping. This is how the GA accesses memory.
     pub fn read_ram(&self, addr: u16) -> u8 {
-        self.memory.read(addr)
+        self.memory.read_byte(addr)
     }
 }
 
 impl Bus for Cpc {
     fn read(&self, addr: u16) -> u8 {
         match addr {
-            0x0000..=0x3FFF if self.gate_array.lower_rom_enabled() => self.rom[addr as usize],
+            0x0000..=0x3FFF if self.gate_array.lower_rom_enabled() => self.lower_rom[addr as usize],
             0xC000..=0xFFFF if self.gate_array.upper_rom_enabled() => {
-                self.rom[addr as usize - 0x8000]
+                let rom = match self.memory {
+                    CpcMemory::Model128K { .. } if self.selected_rom == 7 => 1,
+                    _ => 0,
+                };
+                self.upper_roms[rom][addr as usize - 0xC000]
             }
-            _ => self.memory.read(addr),
+            _ => self.memory.read(addr, self.memory_banking_selection),
         }
     }
 
     fn write(&mut self, addr: u16, value: u8) {
-        self.memory.write(addr, value);
+        self.memory
+            .write(addr, value, self.memory_banking_selection);
     }
 
     fn port_read(&self, port: u16) -> u8 {
         match port >> 8 {
             0xBC..=0xBF => self.crtc.read(port),
             0xF4..=0xF7 => self.ppi.read(port),
+            // TODO: handle
+            0xFB => 0xFF,
             _ => todo!("Unexpected port read at address {:#04X}", port),
         }
     }
@@ -104,10 +144,16 @@ impl Bus for Cpc {
     fn port_write(&mut self, port: u16, value: u8) {
         match port >> 8 {
             // TODO: handle
-            0xEF | 0xDF | 0xF8 => {}
+            0xEF | 0xF8 | 0xFA => {}
             0xBC..=0xBF => self.crtc.write(port, value),
+            0xDF => self.selected_rom = value,
             0xF4..=0xF7 => self.ppi.write(port, value),
-            0x7F => self.gate_array.write(port, value),
+            0x7F => {
+                self.gate_array.write(port, value);
+                if (value & 0xC0) == 0xC0 && matches!(self.memory, CpcMemory::Model128K { .. }) {
+                    self.memory_banking_selection = value & 0x07;
+                }
+            }
             _ => todo!(
                 "Unexpected port write at address {:#04X} with value {:#02x}",
                 port,
@@ -142,10 +188,9 @@ mod tests {
     }
 
     fn create_cpc() -> Cpc {
-        let memory = CpcMemory::new_64k();
         let rom = create_test_rom();
 
-        Cpc::new(memory, &rom)
+        Cpc::new_464(&rom)
     }
 
     /// Advance the CPC by exactly one full CRTC scanline worth of cycles
@@ -401,5 +446,338 @@ mod tests {
         assert_eq!(cpc.read(0x1000), 0x11); // Lower ROM
         cpc.write(0x1000, 0x77);
         assert_eq!(cpc.read_ram(0x1000), 0x77);
+    }
+
+    fn create_test_6128_rom() -> Vec<u8> {
+        let mut rom = vec![0u8; 0xC000];
+        for i in 0..0x4000 {
+            rom[i] = 0xAA; // Lower
+        }
+        for i in 0x4000..0x8000 {
+            rom[i] = 0xBB; // Upper 0
+        }
+        for i in 0x8000..0xC000 {
+            rom[i] = 0xCC; // Upper 7
+        }
+        rom
+    }
+
+    fn create_6128() -> Cpc {
+        let rom = create_test_6128_rom();
+        Cpc::new_6128(&rom)
+    }
+
+    #[test]
+    fn test_6128_rom_default_mapping() {
+        let cpc = create_6128();
+
+        // Lower ROM should be active by default
+        assert_eq!(
+            cpc.read(0x0000),
+            0xAA,
+            "Lower ROM should be mapped to 0x0000"
+        );
+
+        // Upper ROM 0 (BASIC) should be active by default at 0xC000
+        assert_eq!(
+            cpc.read(0xC000),
+            0xBB,
+            "Upper ROM 0 should be mapped to 0xC000"
+        );
+    }
+
+    #[test]
+    fn test_upper_rom_selection_via_port_df() {
+        let mut cpc = create_6128();
+
+        // Default is ROM 0
+        assert_eq!(cpc.read(0xC000), 0xBB);
+
+        // Select ROM 7 (AMSDOS)
+        cpc.port_write(0xDF00, 7);
+        assert_eq!(
+            cpc.read(0xC000),
+            0xCC,
+            "Upper ROM 7 should be mapped after OUT &DF00,7"
+        );
+
+        // Select ROM 0 (BASIC) back
+        cpc.port_write(0xDF00, 0);
+        assert_eq!(
+            cpc.read(0xC000),
+            0xBB,
+            "Upper ROM 0 should be mapped after OUT &DF00,0"
+        );
+
+        // Select unpopulated ROM -> should return ROM 0
+        for rom in 1..7 {
+            cpc.port_write(0xDF00, rom);
+            assert_eq!(
+                cpc.read(0xC000),
+                0xBB,
+                "Unpopulated Upper ROM should fallback to ROM 0"
+            );
+        }
+    }
+
+    #[test]
+    fn test_upper_rom_selection_persists_across_memory_writes() {
+        let mut cpc = create_6128();
+
+        cpc.port_write(0xDF00, 7);
+        cpc.write(0xC000, 0x42); // Writes to RAM, not ROM
+
+        // Reading should still return ROM 7 data, not the written RAM data
+        assert_eq!(cpc.read(0xC000), 0xCC);
+    }
+
+    /// Helper to write MMR config
+    fn write_mmr(cpc: &mut Cpc, config: u8) {
+        let value = 0xC0 | (config & 0x07);
+        cpc.port_write(0x7F00, value);
+    }
+
+    /// Helper to disable both ROMs so reads hit the underlying RAM
+    fn disable_roms(cpc: &mut Cpc) {
+        cpc.port_write(0x7F00, 0x8C); // 1000_1100 -> Mode 0, ROMs off
+    }
+
+    #[test]
+    fn test_mmr_config_0_default_linear_mapping() {
+        let mut cpc = create_6128();
+        disable_roms(&mut cpc);
+        write_mmr(&mut cpc, 0);
+
+        cpc.write(0x0000, 0x10);
+        cpc.write(0x4000, 0x11);
+        cpc.write(0x8000, 0x12);
+        cpc.write(0xC000, 0x13);
+
+        assert_eq!(cpc.read(0x0000), 0x10);
+        assert_eq!(cpc.read(0x4000), 0x11);
+        assert_eq!(cpc.read(0x8000), 0x12);
+        assert_eq!(cpc.read(0xC000), 0x13);
+    }
+
+    #[test]
+    fn test_mmr_config_1_bank1_at_c000() {
+        let mut cpc = create_6128();
+        disable_roms(&mut cpc);
+
+        // Config 0: Write to 0xC000 goes to Bank 0, Block 3
+        write_mmr(&mut cpc, 0);
+        cpc.write(0xC000, 0x33);
+
+        // Config 1: Write to 0xC000 goes to Bank 1, Block 3 (3*)
+        write_mmr(&mut cpc, 1);
+        cpc.write(0xC000, 0x77);
+
+        // Verify Config 0
+        write_mmr(&mut cpc, 0);
+        assert_eq!(
+            cpc.read(0xC000),
+            0x33,
+            "Config 0 C000 should read Bank 0 Block 3"
+        );
+
+        // Verify Config 1
+        write_mmr(&mut cpc, 1);
+        assert_eq!(
+            cpc.read(0xC000),
+            0x77,
+            "Config 1 C000 should read Bank 1 Block 3"
+        );
+    }
+
+    #[test]
+    fn test_mmr_config_2_full_bank1_mapping() {
+        let mut cpc = create_6128();
+        disable_roms(&mut cpc);
+        write_mmr(&mut cpc, 2); // 0*, 1*, 2*, 3*
+
+        cpc.write(0x0000, 0x44); // Block 4
+        cpc.write(0x4000, 0x55); // Block 5
+        cpc.write(0x8000, 0x66); // Block 6
+        cpc.write(0xC000, 0x77); // Block 7
+
+        assert_eq!(cpc.read(0x0000), 0x44);
+        assert_eq!(cpc.read(0x4000), 0x55);
+        assert_eq!(cpc.read(0x8000), 0x66);
+        assert_eq!(cpc.read(0xC000), 0x77);
+
+        // Ensure Bank 0 is untouched
+        write_mmr(&mut cpc, 0);
+        assert_ne!(cpc.read(0x0000), 0x44);
+        assert_ne!(cpc.read(0x4000), 0x55);
+    }
+
+    #[test]
+    fn test_mmr_config_3_mixed_mapping() {
+        let mut cpc = create_6128();
+        disable_roms(&mut cpc);
+
+        // Config 0: Map standard blocks
+        write_mmr(&mut cpc, 0);
+        cpc.write(0x4000, 0x11); // Block 1
+        cpc.write(0xC000, 0x33); // Block 3
+
+        // Config 3: 0, 3, 2, 3*
+        write_mmr(&mut cpc, 3);
+        cpc.write(0x4000, 0x33); // Block 3 (Bank 0)
+        cpc.write(0xC000, 0x77); // Block 3 (Bank 1)
+
+        // Verify 0x4000 sees Block 3 (0x33), not Block 1 (0x11)
+        assert_eq!(cpc.read(0x4000), 0x33);
+
+        // Verify 0xC000 sees Bank 1 Block 3 (0x77)
+        assert_eq!(cpc.read(0xC000), 0x77);
+
+        // Switch back to Config 0 to verify Bank 0 Block 3 was overwritten by 0x4000 write
+        write_mmr(&mut cpc, 0);
+        assert_eq!(
+            cpc.read(0x4000),
+            0x11,
+            "Config 0 0x4000 should still be Block 1"
+        );
+        assert_eq!(
+            cpc.read(0xC000),
+            0x33,
+            "Config 0 0xC000 should be Block 3, which was overwritten"
+        );
+        assert_eq!(
+            cpc.read(0x8000),
+            0xFF,
+            "Config 0 0x8000 should be Block 2, which was untouched"
+        );
+    }
+
+    #[test]
+    fn test_mmr_config_4_to_7_ram_expansion_protocol() {
+        let mut cpc = create_6128();
+        disable_roms(&mut cpc);
+
+        // Config 4: 0, 0*, 2, 3
+        write_mmr(&mut cpc, 4);
+        cpc.write(0x4000, 0x44); // Block 4
+
+        // Config 5: 0, 1*, 2, 3
+        write_mmr(&mut cpc, 5);
+        cpc.write(0x4000, 0x55); // Block 5
+
+        // Config 6: 0, 2*, 2, 3
+        write_mmr(&mut cpc, 6);
+        cpc.write(0x4000, 0x66); // Block 6
+
+        // Config 7: 0, 3*, 2, 3
+        write_mmr(&mut cpc, 7);
+        cpc.write(0x4000, 0x77); // Block 7
+
+        // Verify isolation
+        write_mmr(&mut cpc, 4);
+        assert_eq!(cpc.read(0x4000), 0x44);
+
+        write_mmr(&mut cpc, 5);
+        assert_eq!(cpc.read(0x4000), 0x55);
+
+        write_mmr(&mut cpc, 6);
+        assert_eq!(cpc.read(0x4000), 0x66);
+
+        write_mmr(&mut cpc, 7);
+        assert_eq!(cpc.read(0x4000), 0x77);
+    }
+
+    #[test]
+    fn test_gate_array_ignores_mmr_writes() {
+        let mut cpc = create_6128();
+
+        // Set a known state: Mode 2, ROMs enabled
+        cpc.port_write(0x7F00, 0x82); // 1000_0010
+
+        // Write MMR config 1 (1100_0001)
+        write_mmr(&mut cpc, 1);
+
+        // GA should have ignored bits 7,6=11.
+        // Mode should still be 2, ROMs should still be enabled.
+        assert_eq!(
+            cpc.gate_array().mode(),
+            ScreenMode::Mode2,
+            "GA Mode must not change on MMR write"
+        );
+        assert!(
+            cpc.gate_array().lower_rom_enabled(),
+            "Lower ROM state must not change on MMR write"
+        );
+        assert!(
+            cpc.gate_array().upper_rom_enabled(),
+            "Upper ROM state must not change on MMR write"
+        );
+    }
+
+    #[test]
+    fn test_rom_enable_overrides_mmr_mapping() {
+        let mut cpc = create_6128();
+
+        // MMR Config 2 maps Bank 1 to 0x0000-0x3FFF
+        write_mmr(&mut cpc, 2);
+
+        // But Lower ROM is enabled by default, so 0x0000 should read Lower ROM
+        assert_eq!(
+            cpc.read(0x0000),
+            0xAA,
+            "Lower ROM should override Bank 1 mapping"
+        );
+
+        // Disable Lower ROM
+        cpc.port_write(0x7F00, 0x84); // 1000_0100 (Mode 0, Lower ROM off)
+
+        // Now it should read Bank 1 Block 0 (Block 4)
+        // We haven't written anything there, so it should be 0x00 (from Vec initialization)
+        assert_eq!(
+            cpc.read(0x0000),
+            0xFF,
+            "Should read Bank 1 after disabling Lower ROM"
+        );
+
+        // Write to Bank 1 and verify
+        cpc.write(0x0000, 0x99);
+        assert_eq!(cpc.read(0x0000), 0x99);
+
+        // Re-enable Lower ROM
+        cpc.port_write(0x7F00, 0x80); // 1000_0000
+        assert_eq!(cpc.read(0x0000), 0xAA, "Lower ROM should be back");
+    }
+
+    #[test]
+    fn test_video_reads_always_bank_0() {
+        let mut cpc = create_6128();
+        disable_roms(&mut cpc);
+
+        // Config 0: Write 0xAA to 0xC000 (Bank 0, Block 3)
+        write_mmr(&mut cpc, 0);
+        cpc.write(0xC000, 0xAA);
+
+        // Config 1: Write 0xBB to 0xC000 (Bank 1, Block 3)
+        write_mmr(&mut cpc, 1);
+        cpc.write(0xC000, 0xBB);
+
+        // If the Gate Array reads video memory, it MUST read from Bank 0,
+        // regardless of the active MMR config (which is currently 1).
+        let video_byte = cpc.read_ram(0xC000);
+        assert_eq!(
+            video_byte, 0xAA,
+            "Video fetcher must read Bank 0, ignoring MMR config"
+        );
+
+        // Same for lower memory
+        write_mmr(&mut cpc, 0);
+        cpc.write(0x0000, 0x11); // Bank 0
+        write_mmr(&mut cpc, 2);
+        cpc.write(0x0000, 0x22); // Bank 1
+
+        let video_byte_low = cpc.read_ram(0x0000);
+        assert_eq!(
+            video_byte_low, 0x11,
+            "Video fetcher must read Bank 0 at low memory"
+        );
     }
 }

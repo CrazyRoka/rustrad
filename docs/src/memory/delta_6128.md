@@ -35,9 +35,9 @@ Both 464 and 6128 use the same Gate Array RMR register (port `&7Fxx`, bits 7-6 =
   * **ROM 0**: Locomotive BASIC (same version as CPC 664, with Line Input bug fixed).
   * **ROM 7**: AMSDOS (the disc operating system, equivalent to the DDI-1 ROM on a 464+DDI-1 configuration).
 
-ROM selection (which Upper ROM is mapped to `&C000-&FFFF`) is performed via a separate write to port `&DFxx` (ROM Select Register). This register is identical on both 464 and 6128, but the bare 464 only has ROM 0 physically populated. Selecting ROM 7 on a 464 without DDI-1 reads from empty socket space (typically returning `&FF`).
+ROM selection (which Upper ROM is mapped to `&C000-&FFFF`) is performed via a separate write to port `&DFxx` (ROM Select Register). This register is identical on both 464 and 6128, but the bare 464 only has ROM 0 physically populated. Selecting ROM 7 on a 464 without DDI-1 reads from empty socket space (typically returning `&FF`). The 464+DDI-1 expansion adds ROM 7 to the system, making its ROM layout equivalent to the 6128.
 
-The 464+DDI-1 expansion adds ROM 7 to the system, making its ROM layout equivalent to the 6128.
+*Note:* The ROM Bank Number is not stored inside the CPC; peripherals must watch the bus for writes to `&DFxx` and match the bank number via a flip-flop (e.g., 74LS74). If no peripheral claims the bank, the internal BASIC ROM responds. On the CPC Plus, the ASIC handles `&DFxx` writes differently to support physical cartridge ROMs (0–31) and logical ROM board ROMs (0–127). See [16-Bit I/O Port Address Decoding](../peripherals/io_decoding.md#upper-rom-bank-number-selection-port-dfxx) for full hardware details.
 
 #### PAL Chip Interface Signals
 ```

@@ -80,6 +80,62 @@ When `A10` is low, the expansion bus is active. The system decodes specific expa
 * **Port Address:** `&F8FF`
 * **Function:** Serves as a master software-triggered reset for all connected expansion devices.
 
+#### Upper ROM Bank Number Selection (Port `&DFxx`)
+
+Writing to Port `&DFxx` selects the Upper ROM Bank Number (0–255) to be mapped to the CPU address space at `&C000`–`&FFFF`. The actual enabling of the ROM (or mapping RAM to that region) is controlled by the Gate Array's RMR register (Bit 3).
+
+##### Hardware Implementation (CPC)
+The ROM Bank Number is **not stored anywhere inside the CPC itself**. Instead, peripherals must watch the Z80 bus for writes to Port `&DFxx`. If the peripheral's onboard logic (e.g., a 74LS74 flip-flop) detects a bank number match, it sets a flip-flop.
+
+When the CPU reads from `&C000`–`&FFFF` (A15=HIGH) and the flip-flop indicates a match, the peripheral sets its ROM's `/OE` (Output Enable) low and outputs `ROMDIS=HIGH` to the CPC, which disables the internal BASIC ROM. The CPC's `/ROMEN` signal is wired to the peripheral ROM's `/CS` (Chip Select). `A14` does not need to be decoded by peripherals since there is no ROM at `&8000`–`&BFFF`, only at `&C000`–`&FFFF`.
+
+By default, if there are no peripherals asserting `ROMDIS=HIGH`, the internal BASIC ROM is mapped to all bank numbers (0–255).
+
+##### Common ROM Bank Numbers
+
+| Bank Number | Description |
+|-------------|-------------|
+| `00h` | BASIC (or AMSDOS, depending on LK1 on the DDI-1 board) |
+| `07h` | AMSDOS (or BASIC, depending on LK1 on the DDI-1 board) |
+| `00h`–`07h` | Bootable ROMs on CPC 464/664/6128 (scanned by `KL_ROM_WALK`) |
+| `08h`–`0Fh` | Bootable ROMs on CPC 664/6128 (scanned by `KL_ROM_WALK`) |
+| `10h`–`FFh` | Non-bootable ROMs (or secondary banks of Bootable ROMs) |
+| `FCh`–`FFh` | Can be used, but aren't accessible by BIOS functions |
+| `FFh` | BASIC (or ROM with similar ID); used for the crude 128K RAM-size detection in CP/M+ and BIOS key scan detection in AMSDOS+ |
+
+*Note:* The DDI-1 link (LK1) controls whether AMSDOS is assigned to ROM 0 or ROM 7. By default, AMSDOS is ROM 7. If LK1 is changed, AMSDOS becomes ROM 0 and automatically boots CP/M from drive A on startup.
+
+##### ASIC ROM Numbering System (CPC Plus)
+
+On the classic CPC, Port `&DFxx` simply accepts a logical ROM number from 0 to 255.
+
+On the Amstrad Plus, this port behaves in two modes depending on **Bit 7** of the written value:
+* **Bit 7 = 0:** Selects a **logical ROM** number (0–127). ROM boards attached to the expansion port are assigned logical IDs.
+* **Bit 7 = 1:** Bits 6–5 are ignored. Bits 4–0 select a **physical ROM** number (0–31) directly from the cartridge.
+
+The Plus factory cartridge contains the following **physical ROMs**:
+
+| Physical ROM | Content |
+|--------------|---------|
+| `0` | Firmware |
+| `1` | BASIC |
+| `2` | Unused |
+| `3` | AMSDOS |
+| `4` | Burnin' Rubber ROM 0 |
+| `5` | Burnin' Rubber ROM 1 |
+| `6` | Burnin' Rubber ROM 2 |
+| `7` | Burnin' Rubber ROM 3 |
+
+To maintain compatibility with classic CPC software, the Plus firmware also maps physical ROMs to logical IDs:
+* Physical ROM 1 (BASIC) is mapped to **Logical ROM 0**.
+* Physical ROM 3 (AMSDOS) is mapped to **Logical ROM 7**.
+
+Logical ROMs can be overridden by a ROM board in the expansion port, but physical ROMs on the cartridge cannot be replaced.
+
+**Summary of ROM Limits:**
+* **CPC:** 1 Lower ROM (Firmware) + up to 256 Upper ROMs.
+* **Plus:** Up to 32 physical ROMs per cartridge. The first 8 physical ROMs can also be accessed as Lower ROMs. ROM boards provide up to 128 logical ROMs, accessible only as Upper ROMs.
+
 ---
 
 ### The 7-Bit Printer Port Interface & Pin 14 Ground Hazard

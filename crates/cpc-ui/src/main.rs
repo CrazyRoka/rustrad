@@ -8,19 +8,36 @@ use iced::{
     widget::{
         Space, button, column, container,
         image::{self as iced_image, FilterMethod},
-        row, text,
+        pick_list, row, text,
     },
 };
 use std::{
+    fmt::Display,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use cpc::{Cpc, CpcKey, CpcMemory, TapePlayer, WINDOW_HEIGHT, WINDOW_WIDTH};
+use cpc::{Cpc, CpcKey, TapePlayer, WINDOW_HEIGHT, WINDOW_WIDTH};
 use z80::Z80;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CpcModel {
+    Cpc464,
+    Cpc6128,
+}
+
+impl Display for CpcModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Cpc464 => "CPC 464",
+            Self::Cpc6128 => "CPC 6128",
+        })
+    }
+}
+
 const ROM_BYTES_464_MODEL: &[u8] = include_bytes!("../../../roms/cpc464.rom");
+const ROM_BYTES_6128_MODEL: &[u8] = include_bytes!("../../../roms/cpc6128.rom");
 
 const SIDEBAR_WIDTH: f32 = 200.0;
 const TICKS_PER_LINE: u64 = 64;
@@ -54,6 +71,7 @@ enum EmuCommand {
     ReloadTape,
     Restart,
     ToggleFpsLimit,
+    SetModel(CpcModel),
     KeyDown(CpcKey),
     KeyUp(CpcKey),
 }
@@ -66,6 +84,7 @@ struct EmulatorApp {
     command_tx: std::sync::mpsc::Sender<EmuCommand>,
     unlimited_fps: bool,
     filter_method: FilterMethod,
+    selected_model: CpcModel,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +94,7 @@ enum Message {
     TapeLoaded(Option<PathBuf>),
     ToggleTapePressed,
     ReloadTapePressed,
+    ModelSelected(CpcModel),
     RestartPressed,
     ToggleFpsPressed,
     ToggleFilterMethod,
@@ -102,6 +122,7 @@ impl EmulatorApp {
                 command_tx,
                 unlimited_fps: false,
                 filter_method: FilterMethod::Nearest,
+                selected_model: CpcModel::Cpc6128,
             },
             Command::none(),
         )
@@ -114,6 +135,10 @@ impl EmulatorApp {
 
     fn update(&mut self, message: Message) -> Command<Message> {
         match message {
+            Message::ModelSelected(cpc_model) => {
+                self.selected_model = cpc_model.clone();
+                let _ = self.command_tx.send(EmuCommand::SetModel(cpc_model));
+            }
             Message::LoadTapePressed => {
                 return Command::perform(
                     async {
@@ -189,7 +214,7 @@ impl EmulatorApp {
 
         // Left Sidebar Control Panel
         let sidebar = column![
-            text("Amstrad CPC 464").size(24),
+            text(format!("Amstrad {}", self.selected_model)).size(24),
             Space::new().height(Length::Fixed(20.0)),
             button(text("Load CDT File..."))
                 .width(Length::Fill)
@@ -204,6 +229,14 @@ impl EmulatorApp {
             button(text("Rewind Tape"))
                 .width(Length::Fill)
                 .on_press(Message::ReloadTapePressed),
+            Space::new().height(Length::Fixed(20.0)),
+            text("Model:"),
+            pick_list(
+                vec![CpcModel::Cpc464, CpcModel::Cpc6128],
+                Some(self.selected_model.clone()),
+                Message::ModelSelected
+            )
+            .width(Length::Fill),
             Space::new().height(Length::Fixed(20.0)),
             button(text("Restart"))
                 .width(Length::Fill)
@@ -264,8 +297,8 @@ fn run_emulator_thread(
     rx: std::sync::mpsc::Receiver<EmuCommand>,
     shared_state: Arc<Mutex<SharedState>>,
 ) {
-    let memory = CpcMemory::new_64k();
-    let mut bus = Cpc::new(memory, ROM_BYTES_464_MODEL);
+    let mut model = CpcModel::Cpc6128;
+    let mut bus = Cpc::new_6128(ROM_BYTES_6128_MODEL);
     let mut cpu = Z80::new();
 
     let mut tape_bytes: Vec<u8> = Vec::new();
@@ -302,16 +335,13 @@ fn run_emulator_thread(
                     }
                 }
                 EmuCommand::Restart => {
-                    let memory = CpcMemory::new_64k();
-                    bus = Cpc::new(memory, ROM_BYTES_464_MODEL);
-                    cpu = Z80::new();
-                    ticks_count = 0;
-                    // Reload tape if we had one
-                    if !tape_bytes.is_empty() {
-                        if let Ok(tape) = TapePlayer::from_cdt(&tape_bytes) {
-                            bus.ppi_mut().load_tape(tape);
-                        }
-                    }
+                    rebuild_machine(
+                        &mut bus,
+                        &mut cpu,
+                        &tape_bytes,
+                        &mut ticks_count,
+                        model.clone(),
+                    );
                 }
                 EmuCommand::ToggleFpsLimit => unlimited_fps = !unlimited_fps,
                 EmuCommand::KeyDown(k) => {
@@ -319,6 +349,16 @@ fn run_emulator_thread(
                 }
                 EmuCommand::KeyUp(k) => {
                     bus.ppi_mut().keyboard_mut().release_key(&k);
+                }
+                EmuCommand::SetModel(cpc_model) => {
+                    model = cpc_model;
+                    rebuild_machine(
+                        &mut bus,
+                        &mut cpu,
+                        &tape_bytes,
+                        &mut ticks_count,
+                        model.clone(),
+                    );
                 }
             }
         }
@@ -374,6 +414,27 @@ fn run_emulator_thread(
             last_frame_time = Instant::now();
         } else {
             last_frame_time = Instant::now();
+        }
+    }
+}
+
+fn rebuild_machine(
+    bus: &mut Cpc,
+    cpu: &mut Z80,
+    tape_bytes: &Vec<u8>,
+    ticks_count: &mut u64,
+    model: CpcModel,
+) {
+    *bus = match model {
+        CpcModel::Cpc464 => Cpc::new_464(ROM_BYTES_464_MODEL),
+        CpcModel::Cpc6128 => Cpc::new_6128(ROM_BYTES_6128_MODEL),
+    };
+    *cpu = Z80::new();
+    *ticks_count = 0;
+    // Reload tape if we had one
+    if !tape_bytes.is_empty() {
+        if let Ok(tape) = TapePlayer::from_cdt(tape_bytes) {
+            bus.ppi_mut().load_tape(tape);
         }
     }
 }
