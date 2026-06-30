@@ -17,3 +17,21 @@ To simplify implementation and maintain clarity, this reference manual employs t
 * **Video:** CRTC 6845 (Type 0/1) coupled with the Amstrad Gate Array. Supporting three planar color modes.
 * **Audio:** General Instrument AY-3-8912 Programmable Sound Generator (PSG).
 * **I/O:** Intel 8255 Peripheral Interface (PPI) managing keyboard, cassette, and PSG control.
+
+### Delta Model Summary
+
+| Model | Key Differences from Base 464 |
+|-------|-------------------------------|
+| **CPC 664** | Replaces cassette deck with built-in 3" disc drive. Firmware bugs fixed (Line Input). Slightly extended BASIC. Gate Array 40008. |
+| **CPC 6128** | 128 KB RAM (64 KB base + 64 KB extended via PAL16L8). 48 KB ROM (adds AMSDOS as ROM 7). Gate Array 40010. CP/M Plus 3.1 (61K TPA). External cassette port (5-pin DIN). See [Delta: CPC 6128 PAL Bank Switching](memory/delta_6128.md). |
+| **CPC+ / GX4000** | Full ASIC integration (40489). Hardware sprites, DMA, analog ADC, RMR2 register, cartridge slot. 128K internal RAM. Different RGB output levels. See [Delta: CPC+ Hardware Sprites](video/sprites.md). |
+
+#### CPC 6128 Specifics
+
+Key architectural additions over the 464 base:
+
+* **Extended RAM Banking**: A PAL16L8 chip manages a second 64 KB RAM bank, accessible via MMR commands (port `&7Fxx`, data bits 7-6 = `11`). The 464 lacks this PAL; MMR commands are silently ignored on the 464.
+* **Extended ROM**: 48 KB physical ROM contains both BASIC (ROM 0) and AMSDOS (ROM 7), versus 32 KB (BASIC only) on the 464.
+* **Firmware**: Derived from the CPC 664 firmware (not the 464). Includes `&BD5B` call for second-bank access. Some 464 "illegal" call targets may not work.
+* **Video RAM Restriction**: The PAL banking only affects CPU addressing. The Gate Array always reads video data from the base 64K RAM; extended RAM cannot serve as video RAM.
+* **External Expansion Auto-Disable**: Connecting an external RAM expansion to a 6128 automatically disables the internal 64K extended RAM.

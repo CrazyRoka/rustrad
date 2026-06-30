@@ -24,6 +24,16 @@ The physical switching between ROM and RAM states is driven directly by the Vide
 ## Bank-Switching Execution Strategy
 To perform jumps and register state changes while simultaneously paged-in ROM banks are swapped, the Amstrad operating system relies on dedicated routines placed in the **central RAM** space (`&4000-&BFFF`). Because this middle 32 KB of RAM has no overlapping ROM banks, its contents are persistently accessible to the CPU across all ROM configuration states.
 
+## Delta: CPC 6128 Memory Architecture
+
+The CPC 6128 extends the base memory architecture with the following additions (full details in [Delta: CPC 6128 PAL Bank Switching](delta_6128.md)):
+
+* **Extended RAM**: An additional 64 KB bank (Bank 1) managed by a PAL16L8 chip, bringing total RAM to 128 KB.
+* **Extended ROM**: 48 KB physical ROM (vs 32 KB on the 464), containing both BASIC (ROM 0) and AMSDOS (ROM 7) in the Upper ROM space.
+* **MMR Register**: A fourth "virtual" register in the Gate Array's I/O space (port `&7Fxx`, data bits 7-6 = `11`), intercepted by the PAL, which controls RAM banking configurations 0–7.
+* **464 Compatibility**: MMR commands written to a 464 (which lacks the PAL) are silently ignored by the Gate Array. The 464 remains in its default linear 64 KB configuration at all times.
+* **Video RAM Restriction**: The PAL banking only affects CPU addressing. The Gate Array always fetches video data from the base 64K RAM (Bank 0); extended RAM cannot be used as video RAM.
+
 ## Chapter Directory
 * [CPC 464 Base Memory Map](map_464.md)
 * [Dynamic RAM Refresh Mechanics](refresh.md)

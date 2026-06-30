@@ -20,9 +20,23 @@ When a byte is written to the Gate Array, bits 7 and 6 determine the register fu
 | 1 | 0 | Select Screen Mode, ROM Configuration, and Interrupt Reset |
 | 1 | 1 | RAM Memory Management (Bypassed to RAM PAL on CPC 6128) |
 
----
+#### MMR Register Behavior Across Models
 
-### Register Definitions
+The `11` command code (bits 7,6 = `11`) is **not processed by the Gate Array itself** on any CPC model. Instead, it is intercepted by external banking logic if present:
+
+| Model | Banking Hardware | Behavior of `11` command (MMR) |
+|-------|-----------------|-------------------------------|
+| **CPC 464** (base) | None | Silently ignored. No effect on memory. The 464 remains in linear 64 KB mode. |
+| **CPC 464 + DDI-1** | None (DDI-1 adds ROM, not RAM) | Silently ignored. Same as base 464. |
+| **CPC 464 + 6128-compat RAM expansion** | External PAL16L8 | Processed by expansion PAL. Banking functional. |
+| **CPC 664** | None | Silently ignored. No effect on memory. |
+| **CPC 6128** | Internal PAL16L8 | Processed by internal PAL. Banking functional. |
+| **CPC 6128 + external RAM expansion** | External PAL (internal PAL disabled) | Processed by external expansion PAL. Internal 64K extended RAM auto-disabled. |
+| **CPC+ / GX4000** | ASIC (integrated) | Processed by ASIC. Banking functional. |
+
+**I/O Decoding Difference**: The PAL decodes only `A15 = 0` (ignoring `A14`), while the Gate Array decodes both `A15 = 0` AND `A14 = 1`. The PAL also responds only to I/O **write** operations; the Gate Array responds regardless of read/write state. This means a read from port `&7Fxx` on any CPC model returns an unpredictable high-impedance bus value (the PAL never drives the bus on reads).
+
+#### Register Definitions
 
 #### 1. Select Pen Register (Bits 7=0, 6=0)
 * **Standard Pen Selection:** If bit 4 is `0`, bits 3–0 specify which ink palette index (`0` to `15`) is targeted for color reassignment.
@@ -138,3 +152,15 @@ When writing to the **INKR (Select Color)** register, you must map the active co
 | `&4A` | `4Ah` | Bright Yellow | 100 | 100 | 0 | `#FFFF00` |
 | `&43` | `43h` (or `49h`) | Pastel Yellow | 100 | 100 | 50 | `#FFFF80` |
 | `&4B` | `4Bh` | Bright White | 100 | 100 | 100 | `#FFFFFF` |
+
+#### Gate Array Hardware Versions
+
+Different revisions of the Gate Array silicon exist across CPC models:
+
+| GA Version | Used In | Notes |
+|------------|---------|-------|
+| **40007** | Early CPC 464 | Original version. Pinout incompatible with later versions. Some units shipped with large heatsinks. Mode 2 rasterization aligned with modes 0/1/3. |
+| **40008** | CPC 664 (and late 464) | Improved version. Pinout incompatible with 40007 (mainboards have slots for both). Mode 2 rasterization aligned with modes 0/1/3. |
+| **40010** | CPC 6128 (and late 464/664) | Pinout compatible with 40008. **Mode 2 quirk**: display starts 1 Mode 2 pixel (0.0625 µs) earlier than modes 0/1/3, shifting scanlines left in Mode 2. |
+| **40226** (Pre-ASIC) | Costdown CPC 464/6128 (1988+) | Integrates Gate Array + PAL + CRTC into a single ASIC. Mode 2 rasterization aligned with modes 0/1/3. RGB output levels slightly different from discrete Gate Array. |
+| **40489** (ASIC) | CPC+ / GX-4000 | Full system ASIC. Mode 2 rasterization aligned with modes 0/1/3 (no left-shift quirk). RGB levels noticeably different from discrete Gate Array. Adds RMR2 register, hardware sprites, DMA, analog ADC. |

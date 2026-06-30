@@ -40,6 +40,21 @@ A robust emulator should monitor and flag situations where **more than one** of 
 | **8255 PPI** | `&F4xx - &F7xx`| Read/Write | - | - | - | - | 0 | - | $r_1$ | $r_0$ |
 | **Expansion Peripherals** | `&F8xx - &FBxx`| Read/Write | - | - | - | - | - | 0 | - | - |
 
+##### Gate Array vs PAL Decoding at Port `&7Fxx`
+
+The **Gate Array** and the **PAL** (present only on the CPC 6128, or via external RAM expansion) both respond to writes at port `&7Fxx`, but they use **different address decoding** and **different command codes**:
+
+| Aspect | Gate Array | PAL (6128 / expansions) |
+|--------|-----------|------------------------|
+| Address decode | `A15 = 0` AND `A14 = 1` | `A15 = 0` only (ignores `A14`) |
+| I/O Read | Responds (returns floating bus) | Does not respond |
+| I/O Write | Responds | Responds |
+| Active command bits | Bits 7,6 = `00`, `01`, or `10` | Bits 7,6 = `11` only |
+
+Because their command codes are mutually exclusive, a single write to `&7Fxx` never triggers both chips simultaneously. The PAL's broader address decode (`A15 = 0` only, ignoring `A14`) means it also responds to writes at ports where `A14 = 0` (e.g., `&3Fxx`), but in practice, software always uses `&7Fxx` for MMR commands to avoid conflicts with the CRTC (`&BCxx`–`&BFxx`, selected by `A14 = 0`).
+
+**On the CPC 464 (no PAL)**: The MMR row in the table above is effectively a no-op. Writes with data bits 7,6 = `11` to port `&7Fxx` are silently ignored by the Gate Array. No memory configuration change occurs.
+
 #### Internal Registrations Decode
 
 ##### CRTC Registers (`r1`, `r0` on bits 9, 8)
