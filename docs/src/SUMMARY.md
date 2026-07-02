@@ -30,6 +30,7 @@
     - [FDC Low-Level Registers](disk/fdc_registers.md)
     - [FDC Command Phase & Instructions](disk/fdc_commands.md)
     - [Drive Set Up Timing & Parameters](disk/parameters.md)
+    - [DSK & EDSK Disk Image Format](disk/dsk_format.md)
 - [6. Sound Hardware](sound/index.md)
     - [PSG Register Port I/O & Bus Operations](sound/psg_io.md)
 - [7. Cassette Storage & CDT Format](cassette/index.md)

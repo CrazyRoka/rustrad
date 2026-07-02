@@ -1,23 +1,29 @@
-
-The NEC µPD765A/B Floppy Disk Controller exposes only two directly addressable registers to the CPU. Address decoding utilizes the 16-bit I/O map.
-
----
+The NEC µPD765A/B Floppy Disk Controller (and equivalents) exposes its registers via the 16-bit I/O map. The FDC is treated as an expansion peripheral, selected when address bus line `A10` is driven low and `A7` is driven low. 
 
 ### I/O Port Address Mapping
 
-The FDC is selected when address bus line `A10` is driven low and line `A7` is driven low. The specific register selection is determined by address line `A0`:
+To avoid conflicts, all other undefined address bits should be driven high (`1`), with `A8` and `A0` determining the specific target:
 
-* **`&FA7E` (A0 = 0) - Read Only:** Main Status Register (MSR)
-* **`&FA7F` (A0 = 1) - Read/Write:** FDC Data Register (FIFO/Stack)
+| Port Address | A8 | A0 | Access Type | Function / Description |
+| :--- | :---: | :---: | :--- | :--- |
+| **`&FA7E`** | 0 | 0 | Write Only | **Floppy Motor On/Off Flip-Flop:** Writing `00h` turns all drive motors off, writing `01h` turns all motors on. Individual drive motor control is not possible. (Note: Gotek drives ignore this and are always on). |
+| **`&FB7E`** | 1 | 0 | Read Only | **FDC Main Status Register (MSR):** Handshaking and busy states. |
+| **`&FB7F`** | 1 | 1 | Read/Write | **FDC Data Register (FIFO/Stack):** Used to write commands/parameters and read status/data. |
 
-#### Address Decoding Truth Table
-```
-A15 A14 A13 A12 A11 A10 A9  A8  A7  A6  A5  A4  A3  A2  A1  A0  | Selected Port
- -   -   -   -   -   0   -   -   0   -   -   -   -   -   -   0  | &FA7E (MSR Read)
- -   -   -   -   -   0   -   -   0   -   -   -   -   -   -   1  | &FA7F (Data FIFO Read/Write)
-```
+*Note: Some FDC commands (like Seek and Recalibrate) do not require the motor to be on, and work fine even with an empty drive (no disk inserted).*
 
----
+### Hardware Pin Unconnections & Quirks
+
+The Amstrad CPC mainboard leaves several µPD765 pins unconnected, altering its behavior compared to standard PC implementations:
+
+* **No DMA / Interrupts:** The `DRQ` (DMA Request) and `INT` (Interrupt) pins are not connected. The CPU must poll the MSR for data transfers.
+* **FM Mode Unavailable:** The `MFM MODE` pin is not connected. FM (Single Density) mode is unusable; only MFM (Double Density) is supported.
+* **Drive Limit:** The `US1` (Unit Select 1) pin is not connected. Only drives 0 and 1 can be selected (AMSDOS supports a maximum of 2 drives).
+* **VCO Sync & Head Load:** The `VCO SYNC` and `HEAD LOAD` pins are also unconnected.
+* **Terminal Count (TC) Hack:** The `TC` and `RESET` pins are connected together. Because `TC` is not on the I/O bus, the CPU cannot send a standard Terminal Count signal to confirm a successful read/write. The FDC will assume the command failed, setting Bit 6 in Status Register 0 (`ST0`) and Bit 7 in Status Register 1 (`ST1`). CPC software must ignore this specific error state.
+
+### Rotation Speed Tolerance
+The floppy disk rotates at a nominal speed of 300 rpm. The FDC has a measured tolerance of **±12%** (accepting data rates from 220 kbits/s to 283 kbits/s for a 250 kbits/s reference).
 
 ### Main Status Register (MSR)
 
@@ -38,7 +44,7 @@ The MSR is an 8-bit read-only register that provides the handshake signals, data
 
 ### Internal Status Registers (ST0, ST1, ST2, ST3)
 
-These four registers are not accessible via standard I/O ports. They are placed in an internal register stack and are read-out sequentially through the Data Register (`&FA7F`) solely during a command's **Result Phase**.
+These four registers are not accessible via standard I/O ports. They are placed in an internal register stack and are read-out sequentially through the Data Register (`&FB7F`) solely during a command's **Result Phase**.
 
 #### Status Register 0 (ST0)
 * **Bits [7..6] - Interrupt Code (IC):**
@@ -56,7 +62,7 @@ These four registers are not accessible via standard I/O ports. They are placed 
 * **Bit 7 - End of Cylinder (EN):** Set if the FDC attempts to access a sector index beyond the final sector of a track.
 * **Bit 6:** Unused (always `0`).
 * **Bit 5 - Data Error (DE):** CRC error detected in either the Sector ID field or the Data field.
-* **Bit 4 - Overrun (OR):** Set if the Z80 CPU fails to read/write a byte within the MFM/FM timing limits (13 μs / 27 μs).
+* **Bit 4 - Overrun (OR):** Set if the Z80 CPU fails to read/write a byte within the timing limits.
 * **Bit 3:** Unused (always `0`).
 * **Bit 2 - No Data (ND):** Sector specified in command parameters could not be located on the track.
 * **Bit 1 - Not Writeable (NW):** Write attempt detected a physical write-protect tab on the medium.
@@ -78,6 +84,18 @@ These four registers are not accessible via standard I/O ports. They are placed 
 * **Bit 6 - Write Protected (WP):** Drive write-protect sensor active.
 * **Bit 5 - Ready (RY):** Drive Ready line active.
 * **Bit 4 - Track 0 (T0):** Drive head is at Track 0.
-* **Bit 3 - Two-Side (TS):** Drive reports dual-sided medium is inserted.
+* **Bit 3 - Two-Side (TS):** `0` = Two-sided medium inserted, `1` = Single-sided.
 * **Bit 2 - Head Address (HD):** Reports the physical head select signal state.
 * **Bits [1..0] - Unit Select (US1, US0):** Reports the selected physical drive lines.
+
+---
+
+### Chip Variants
+
+More than one manufacturer made 765-compatible ICs for the CPC. All operate almost identically.
+* **NEC D765AC** / **D765AC-2**
+* **UMC UM8272A**
+* **Zilog Z765APS** / **Z0765A08PSC**
+* **KP580BB55A** (Soviet clone of i8255, used in KC Compact) / **КР1810ВГ72А** (Soviet clone of i8272, used in Aleste 520EX).
+
+The main competitor on the market was the **WD179x** FDC chip family (used in Oric). Unlike the 765, the 179x has no scan commands, only 1 status register, single-byte command phase, no result phase, no drive select pins, and can write anything in the format track mode.
