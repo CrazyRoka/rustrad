@@ -1,5 +1,6 @@
 mod cpc;
 mod crtc;
+mod fdc;
 mod gate_array;
 mod keyboard;
 mod memory;
