@@ -272,6 +272,70 @@ impl Disk {
     pub fn is_track_formatted(&self, track: u8, side: u8) -> bool {
         self.track(track, side).is_some()
     }
+
+    fn track_mut(&mut self, track: u8, side: u8) -> Option<&mut TrackInfo> {
+        if track >= self.track_count || side >= self.side_count {
+            return None;
+        }
+        self.tracks[self.side_count as usize * track as usize + side as usize].as_mut()
+    }
+
+    pub fn write_sector_data(&mut self, track: u8, side: u8, sector_id: u8, data: &[u8]) -> bool {
+        if let Some(ti) = self.track_mut(track, side) {
+            for s in ti.sectors.iter_mut() {
+                if s.id == sector_id {
+                    let len = data.len().min(s.data.len());
+                    s.data[..len].copy_from_slice(&data[..len]);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn format_track(
+        &mut self,
+        track: u8,
+        side: u8,
+        sectors: &[(u8, u8, u8, u8)],
+        n: u8,
+        gap3: u8,
+        filler: u8,
+    ) {
+        let sz = 1u16 << (n + 7);
+        let sec_count = sectors.len() as u8;
+        let track_size = 256 + sec_count as u16 * sz;
+        let new_sectors: Vec<SectorInfo> = sectors
+            .iter()
+            .map(|&(c, h, r, n)| SectorInfo {
+                track: c,
+                side: h,
+                id: r,
+                size: n,
+                st1: 0,
+                st2: 0,
+                data_length: sz,
+                data: vec![filler; sz as usize],
+            })
+            .collect();
+        let ti = TrackInfo {
+            track_size,
+            track_number: track,
+            side_number: side,
+            data_rate: DataRate::SdDd,
+            recording_mode: RecordingMode::Mfm,
+            sector_size: n,
+            sector_count: sec_count,
+            gap3,
+            filler,
+            sectors: new_sectors,
+        };
+        let idx = self.side_count as usize * track as usize + side as usize;
+        while self.tracks.len() <= idx {
+            self.tracks.push(None);
+        }
+        self.tracks[idx] = Some(ti);
+    }
 }
 
 #[cfg(test)]
