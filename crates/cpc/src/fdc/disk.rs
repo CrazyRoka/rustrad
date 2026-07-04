@@ -20,7 +20,7 @@ const SECTOR_INFO: usize = 0x18;
 const SECTOR_INFO_SIZE: usize = 8;
 
 #[derive(Debug, PartialEq, Eq)]
-enum DiskError {
+pub enum DiskError {
     InvalidHeader,
     InvalidTrackInfo,
     InvalidSectorInfo,
@@ -75,7 +75,7 @@ struct TrackInfo {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Disk {
+pub struct Disk {
     format: Format,
     creator: [u8; 14],
     track_count: u8,
@@ -84,7 +84,7 @@ struct Disk {
 }
 
 impl Disk {
-    fn from_bytes(data: &[u8]) -> Result<Self, DiskError> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self, DiskError> {
         if data.len() < 256 {
             return Err(DiskError::Truncated);
         }
@@ -262,6 +262,13 @@ impl Disk {
             .and_then(|track| track.sectors.iter().find(|sector| sector.id == sector_id))
             .map(|sector| sector.data.as_slice())
     }
+
+    pub fn first_sector_info(&self, track: u8, side: u8) -> Option<(u8, u8, u8, u8)> {
+        self.track(track, side)
+            .and_then(|t| t.sectors.first())
+            .map(|s| (s.track, s.side, s.id, s.size))
+    }
+
     pub fn is_track_formatted(&self, track: u8, side: u8) -> bool {
         self.track(track, side).is_some()
     }

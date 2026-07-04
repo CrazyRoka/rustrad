@@ -84,28 +84,153 @@ The FDC's behavior is often abused for copy protection schemes:
 
 ### FDC Command Set Reference
 
-The µPD765A/B supports 15 operational instructions. Most commands require exactly **9 parameter bytes** written during the Command Phase, and return **7 status bytes** in the Result Phase.
+The µPD765A/B supports 15 operational instructions. Commands are initiated via a multi-byte sequence in the Command Phase, and most return status and ID information in the Result Phase. 
 
-#### Key Instruction Table
+#### Command Symbol Definitions
+* **MT** (Multi-Track): `0` = Single track, `1` = Read/Write both sides of a cylinder (Side 0 to Side 1).
+* **MF** (FM/MFM Mode): `0` = FM (Single Density), `1` = MFM (Double Density). *Note: CPC hardware only supports MFM.*
+* **SK** (Skip): `1` = Skip sectors containing a Deleted Data Address Mark (DDAM).
+* **HD** (Head Address): Physical head select (`0` = Side 0, `1` = Side 1).
+* **US1, US0** (Unit Select): Selects the target drive (0 to 3). *Note: CPC only connects US0, max 2 drives.*
+* **C** (Cylinder): Logical track number stored in the ID field.
+* **H** (Head): Logical head number stored in the ID field (must match `HD`).
+* **R** (Record): Starting sector number.
+* **N** (Number): Sector size code. `Data Size = 2^(N+7)`. `N=2` is 512 bytes. `N=0` uses `DTL`.
+* **EOT** (End of Track): Final sector number on a track to transfer.
+* **GPL** (Gap Length): Gap 3 length used between sectors.
+* **DTL** (Data Length): Special data length used when `N=0` (128 bytes).
+* **STP** (Scan Step): `1` for contiguous sectors, `2` for alternate sectors during Scan.
+* **NCN** (New Cylinder Number): Target track for Seek operations.
+* **PCN** (Present Cylinder Number): Current track reported by Sense Interrupt Status.
+* **SC** (Sectors): Sectors per track (used in Format).
+* **D** (Data): Filler byte for formatting (e.g., `&E5`).
+* **SRT** (Step Rate Time): 4-bit value. `F`=1ms, `E`=2ms, etc. (Doubled on CPC 4MHz clock).
+* **HUT** (Head Unload Time): 4-bit value. 0=240ms, 1=16ms, 2=32ms...
+* **HLT** (Head Load Time): 7-bit value. 01=2ms, 02=4ms...
+* **ND** (Non-DMA Mode): `1` = Non-DMA mode (CPC standard), `0` = DMA mode.
 
-| Command Name | Opcode Byte 0 | Command Bytes | Result Bytes | Primary Operations |
-| :--- | :---: | :---: | :---: | :--- |
-| **Read Data** | `MT MF SK 00110` | 9 | 7 | Reads sectors from disk. Increments sector pointer for multi-sector reads. |
-| **Write Data** | `MT MF 000101` | 9 | 7 | Writes sector data from CPU to diskette. |
-| **Read Deleted Data** | `MT MF SK 01100` | 9 | 7 | Same as Read Data, but targets deleted data sectors (DDAM). |
-| **Write Deleted Data** | `MT MF 001001` | 9 | 7 | Same as Write Data, but writes DDAM at sector start. |
-| **Read Track** | `0 MF SK 00010` | 9 | 7 | Continuous read of all sectors on the track starting from the index hole. |
-| **Read ID** | `0 MF 001010` | 2 | 7 | Returns the first valid Sector ID field encountered. |
-| **Format Track** | `0 MF 001101` | 6 | 7 | Synthesizes standard track format (Gaps, IDAM, DAM). |
-| **Scan Equal** | `MT MF SK 10001` | 9 | 7 | Byte-for-byte comparison of disk sectors vs. CPU-supplied stream. |
-| **Scan Low or Equal** | `MT MF SK 11001` | 9 | 7 | Byte-for-byte comparison (Disk <= CPU). |
-| **Scan High or Equal**| `MT MF SK 11101` | 9 | 7 | Byte-for-byte comparison (Disk >= CPU). |
-| **Recalibrate** | `00000111` | 2 | 0 | Retracts the drive head to Track 0. Walks up to 77 tracks; 80-track drives may need a second recalibrate. |
-| **Seek** | `00001111` | 3 | 0 | Moves drive head to a specified cylinder number (`NCN`). |
-| **Specify** | `00000011` | 3 | 0 | Configures internal timers (`SRT`, `HUT`, `HLT`, and `ND`). |
-| **Sense Drive Status**| `00000100` | 2 | 1 | Returns status register `ST3` for a selected drive unit. |
-| **Sense Int Status** | `00001000` | 1 | 2 | Clears FDC interrupt line; returns `ST0` and `PCN` (current track). |
-| **Version** | `00010000` | 1 | 1 | Returns FDC revision: `80H` (uPD765A), `90H` (uPD765B). |
+---
+
+#### 1. Read Data
+Reads sector data from the disk to the CPU. Increments sector pointer for multi-sector reads.
+* **Opcode Bits:** `MT MF SK 00110` (`&06` base)
+* **Command Phase (9 Bytes):**
+  1. Opcode byte
+  2. `X X X X X HD US1 US0`
+  3. `C` (Cylinder)
+  4. `H` (Head)
+  5. `R` (Record/Sector)
+  6. `N` (Number)
+  7. `EOT` (End of Track)
+  8. `GPL` (Gap Length)
+  9. `DTL` (Data Length, or `&FF` if N!=0)
+* **Result Phase (7 Bytes):** `ST0`, `ST1`, `ST2`, `C`, `H`, `R`, `N`
+
+#### 2. Read Deleted Data
+Same as Read Data, but specifically targets sectors marked with a Deleted Data Address Mark (DDAM).
+* **Opcode Bits:** `MT MF SK 01100` (`&0C` base)
+* **Command/Result Phase:** Same 9-byte Command / 7-byte Result layout as Read Data.
+
+#### 3. Write Data
+Writes sector data from the CPU to the diskette.
+* **Opcode Bits:** `MT MF 000101` (`&05` base)
+* **Command/Result Phase:** Same 9-byte Command / 7-byte Result layout as Read Data.
+
+#### 4. Write Deleted Data
+Same as Write Data, but writes a Deleted Data Address Mark (DDAM) at the sector start instead of a normal DAM.
+* **Opcode Bits:** `MT MF 001001` (`&09` base)
+* **Command/Result Phase:** Same 9-byte Command / 7-byte Result layout as Read Data.
+
+#### 5. Read Diagnostic (Read Track)
+Continuous read of all sectors on the track starting from the index hole. Data is transferred regardless of CRC errors.
+* **Opcode Bits:** `0 MF SK 00010` (`&02` base)
+* **Command/Result Phase:** Same 9-byte Command / 7-byte Result layout as Read Data.
+
+#### 6. Read ID
+Returns the first valid Sector ID field encountered. No data transfer occurs during execution.
+* **Opcode Bits:** `0 MF 001010` (`&0A` base)
+* **Command Phase (2 Bytes):**
+  1. Opcode byte
+  2. `X X X X X HD US1 US0`
+* **Result Phase (7 Bytes):** `ST0`, `ST1`, `ST2`, `C`, `H`, `R`, `N`
+
+#### 7. Format Track (Write ID)
+Synthesizes a standard track format (Gaps, IDAM, DAM) based on parameters supplied by the CPU.
+* **Opcode Bits:** `0 MF 001101` (`&0D` base)
+* **Command Phase (6 Bytes):**
+  1. Opcode byte
+  2. `X X X X X HD US1 US0`
+  3. `N` (Bytes/sector size code)
+  4. `SC` (Sectors/track)
+  5. `GPL` (Gap 3 length)
+  6. `D` (Filler byte)
+* **Result Phase (7 Bytes):** `ST0`, `ST1`, `ST2`, `C`, `H`, `R`, `N` *(ID info has no meaning here except for reporting errors).*
+
+#### 8. Scan Equal
+Byte-for-byte comparison of disk sectors vs. CPU-supplied stream. Looks for `DFdd = DProcessor`.
+* **Opcode Bits:** `MT MF SK 10001` (`&11` base)
+* **Command Phase (9 Bytes):**
+  1. Opcode byte
+  2. `X X X X X HD US1 US0`
+  3. `C`, 4. `H`, 5. `R`, 6. `N`, 7. `EOT`, 8. `GPL`
+  9. `STP` (Scan Step: 1 or 2)
+* **Result Phase (7 Bytes):** `ST0`, `ST1`, `ST2`, `C`, `H`, `R`, `N`
+
+#### 9. Scan Low or Equal
+Byte-for-byte comparison looking for `DFdd <= DProcessor`.
+* **Opcode Bits:** `MT MF SK 11001` (`&19` base)
+* **Command/Result Phase:** Same 9-byte Command / 7-byte Result layout as Scan Equal (Byte 9 is `STP`).
+
+#### 10. Scan High or Equal
+Byte-for-byte comparison looking for `DFdd >= DProcessor`.
+* **Opcode Bits:** `MT MF SK 11101` (`&1D` base)
+* **Command/Result Phase:** Same 9-byte Command / 7-byte Result layout as Scan Equal (Byte 9 is `STP`).
+
+#### 11. Recalibrate
+Retracts the drive head to Track 0. The FDC issues up to 77 step pulses; 80-track drives may need a second recalibrate.
+* **Opcode Bits:** `00000111` (`&07`)
+* **Command Phase (2 Bytes):**
+  1. `00000111` (Opcode)
+  2. `X X X X X 0 US1 US0`
+* **Result Phase:** None. *(Must issue `Sense Interrupt Status` to retrieve status).*
+
+#### 12. Sense Interrupt Status
+Clears the FDC interrupt line and returns the current track position (`PCN`). Essential after Seek/Recalibrate.
+* **Opcode Bits:** `00001000` (`&08`)
+* **Command Phase (1 Byte):** `00001000` (Opcode)
+* **Result Phase (2 Bytes):** `ST0`, `PCN` (Present Cylinder Number)
+
+#### 13. Specify
+Configures internal timers for drive mechanics (`SRT`, `HUT`, `HLT`) and the DMA/Non-DMA mode.
+* **Opcode Bits:** `00000011` (`&03`)
+* **Command Phase (3 Bytes):**
+  1. `00000011` (Opcode)
+  2. `SRT` (bits 7-4) | `HUT` (bits 3-0)
+  3. `HLT` (bits 7-1) | `ND` (bit 0)
+* **Result Phase:** None.
+
+#### 14. Sense Drive Status
+Returns real-time status of the physical floppy drive lines directly via `ST3`.
+* **Opcode Bits:** `00000100` (`&04`)
+* **Command Phase (2 Bytes):**
+  1. `00000100` (Opcode)
+  2. `X X X X X HD US1 US0`
+* **Result Phase (1 Byte):** `ST3`
+
+#### 15. Version
+Returns the FDC silicon revision. `80H` = uPD765A, `90H` = uPD765B.
+* **Opcode Bits:** `00010000` (`&10`)
+* **Command Phase (1 Byte):** `00010000` (Opcode)
+* **Result Phase (1 Byte):** `ST0` (Contains `&80` or `&90`)
+
+#### 16. Seek
+Moves the drive head to a specified cylinder number (`NCN`).
+* **Opcode Bits:** `00001111` (`&0F`)
+* **Command Phase (3 Bytes):**
+  1. `00001111` (Opcode)
+  2. `X X X X X HD US1 US0`
+  3. `NCN` (New Cylinder Number)
+* **Result Phase:** None. *(Must issue `Sense Interrupt Status` to retrieve status).*
 
 ---
 
