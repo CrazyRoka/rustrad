@@ -10,6 +10,7 @@ mod video;
 
 pub use cpc::Cpc;
 pub use crtc::Crtc;
+pub use fdc::{Disk, Drive};
 pub use gate_array::{GateArray, ScreenMode};
 pub use keyboard::{CpcKey, Keyboard};
 pub use memory::CpcMemory;

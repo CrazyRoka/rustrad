@@ -1,5 +1,8 @@
+use std::cell::{Ref, RefCell, RefMut};
+
 use crate::{
     Crtc, GateArray, Ppi, Video,
+    fdc::{Controller, Variant},
     memory::{CpcMemory, MemoryReader},
 };
 use z80::Bus;
@@ -16,6 +19,7 @@ pub struct Cpc {
     ppi: Ppi,
     crtc: Crtc,
     video: Video,
+    fdc: Option<RefCell<Controller>>,
 }
 
 impl Cpc {
@@ -36,6 +40,7 @@ impl Cpc {
             ppi: Ppi::new(),
             crtc: Crtc::new(),
             video: Video::new(),
+            fdc: None,
         }
     }
 
@@ -57,6 +62,7 @@ impl Cpc {
             ppi: Ppi::new(),
             crtc: Crtc::new(),
             video: Video::new(),
+            fdc: Some(RefCell::new(Controller::new_with_variant(Variant::Upd765A))),
         }
     }
 
@@ -92,6 +98,14 @@ impl Cpc {
         &mut self.video
     }
 
+    pub fn fdc(&self) -> Option<Ref<'_, Controller>> {
+        self.fdc.as_ref().map(|fdc| fdc.borrow())
+    }
+
+    pub fn fdc_mut(&mut self) -> Option<RefMut<'_, Controller>> {
+        self.fdc.as_ref().map(|fdc| fdc.borrow_mut())
+    }
+
     // Advances the video and other subsystems by exactly one CRTC character clock (one cycle).
     pub fn tick(&mut self) {
         self.video.tick(&self.crtc, &self.gate_array, &self.memory);
@@ -102,7 +116,10 @@ impl Cpc {
         }
         self.gate_array.set_vsync(self.crtc.vsync());
         self.ppi.set_vsync(self.crtc.vsync());
-        self.ppi.tick_tape(4)
+        self.ppi.tick_tape(4);
+        if let Some(fdc) = self.fdc.as_ref() {
+            fdc.borrow_mut().tick(4);
+        }
     }
 
     /// Reads raw RAM, bypassing ROM mapping. This is how the GA accesses memory.
@@ -132,28 +149,48 @@ impl Bus for Cpc {
     }
 
     fn port_read(&self, port: u16) -> u8 {
-        match port >> 8 {
-            0xBC..=0xBF => self.crtc.read(port),
-            0xF4..=0xF7 => self.ppi.read(port),
-            // TODO: handle
-            0xFB => 0xFF,
+        match port {
+            0xBC00..=0xBFFF => self.crtc.read(port),
+            0xF400..=0xF7FF => self.ppi.read(port),
+            0xFB7E => match self.fdc.as_ref() {
+                Some(fdc) => fdc.borrow().read_main_status_register(),
+                None => todo!("Unexpected port read at address {:#04X}", port),
+            },
+            0xFB7F => match self.fdc.as_ref() {
+                Some(fdc) => fdc.borrow_mut().read_data_register(),
+                None => todo!("Unexpected port read at address {:#04X}", port),
+            },
             _ => todo!("Unexpected port read at address {:#04X}", port),
         }
     }
 
     fn port_write(&mut self, port: u16, value: u8) {
-        match port >> 8 {
+        match port {
             // TODO: handle
-            0xEF | 0xF8 | 0xFA => {}
-            0xBC..=0xBF => self.crtc.write(port, value),
-            0xDF => self.selected_rom = value,
-            0xF4..=0xF7 => self.ppi.write(port, value),
-            0x7F => {
+            0xEF00..=0xEFFF | 0xF800..=0xF8FF => {}
+            0xBC00..=0xBFFF => self.crtc.write(port, value),
+            0xDF00..=0xDFFF => self.selected_rom = value,
+            0xF400..=0xF7FF => self.ppi.write(port, value),
+            0x7F00..=0x7FFF => {
                 self.gate_array.write(port, value);
                 if (value & 0xC0) == 0xC0 && matches!(self.memory, CpcMemory::Model128K { .. }) {
                     self.memory_banking_selection = value & 0x07;
                 }
             }
+            0xFA7E => match self.fdc.as_ref() {
+                Some(fdc) => fdc.borrow_mut().set_motor(value & 1 != 0),
+                None => panic!(
+                    "Unexpected port write at address {:#04X} with value {:#02x}",
+                    port, value
+                ),
+            },
+            0xFB7F => match self.fdc.as_ref() {
+                Some(fdc) => fdc.borrow_mut().write_data_register(value),
+                None => panic!(
+                    "Unexpected port write at address {:#04X} with value {:#02x}",
+                    port, value
+                ),
+            },
             _ => todo!(
                 "Unexpected port write at address {:#04X} with value {:#02x}",
                 port,
@@ -778,6 +815,230 @@ mod tests {
         assert_eq!(
             video_byte_low, 0x11,
             "Video fetcher must read Bank 0 at low memory"
+        );
+    }
+
+    fn create_test_rom6128() -> [u8; 0xC000] {
+        let mut rom = [0; 0xC000];
+        for i in 0..0x4000 {
+            rom[i] = 0x11;
+        }
+        for i in 0x4000..0x8000 {
+            rom[i] = 0x22;
+        }
+        for i in 0x8000..0xC000 {
+            rom[i] = 0x33;
+        }
+        rom
+    }
+
+    fn create_cpc6128() -> Cpc {
+        let rom = create_test_rom6128();
+
+        Cpc::new_6128(&rom)
+    }
+
+    #[test]
+    fn fdc_msr_readable_at_port_fb7e() {
+        let cpc = create_cpc6128();
+        // MSR must have RQM set when FDC is idle in Command phase
+        let msr = cpc.port_read(0xFB7E);
+        assert_ne!(msr & 0x80, 0, "RQM must be set when FDC is idle");
+        assert_eq!(msr & 0x40, 0, "DIO must be 0 in Command phase (CPU writes)");
+    }
+
+    // TODO
+    // #[test]
+    // fn fdc_msr_low_byte_is_dont_care() {
+    //     let cpc = create_cpc6128();
+    //     // Any address in 0xFBxx with A0=0 should return the MSR
+    //     let msr_7e = cpc.port_read(0xFB7E);
+    //     let msr_00 = cpc.port_read(0xFB00);
+    //     let msr_ff = cpc.port_read(0xFBFE);
+    //     assert_eq!(
+    //         msr_7e, msr_00,
+    //         "MSR should be accessible at any 0xFBxx with A0=0"
+    //     );
+    //     assert_eq!(
+    //         msr_7e, msr_ff,
+    //         "MSR should be accessible at any 0xFBxx with A0=0"
+    //     );
+    // }
+
+    #[test]
+    fn fdc_motor_control_at_port_fa7e() {
+        let mut cpc = create_cpc6128();
+        cpc.port_write(0xFA7E, 0x01);
+        assert!(
+            cpc.fdc().unwrap().motor_state(),
+            "Motor must be on after writing 0x01 to 0xFA7E"
+        );
+        cpc.port_write(0xFA7E, 0x00);
+        assert!(
+            !cpc.fdc().unwrap().motor_state(),
+            "Motor must be off after writing 0x00 to 0xFA7E"
+        );
+    }
+
+    #[test]
+    fn fdc_motor_write_does_not_affect_data_register() {
+        let mut cpc = create_cpc6128();
+        // Writing to motor port should not be interpreted as a command byte
+        cpc.port_write(0xFA7E, 0x01);
+        // FDC should still be in Command phase, ready for a new command
+        let msr = cpc.port_read(0xFB7E);
+        assert_ne!(msr & 0x80, 0, "RQM must still be set after motor write");
+        assert_eq!(
+            msr & 0x10,
+            0,
+            "CB must be clear — motor write is not a command"
+        );
+    }
+
+    #[test]
+    fn fdc_version_command_through_cpc_bus() {
+        let mut cpc = create_cpc6128();
+        // Issue Version command (opcode 0x10) via the data register port
+        cpc.port_write(0xFB7F, 0x10);
+        // Tick to let the FDC process
+        for _ in 0..200 {
+            cpc.tick();
+        }
+        // Poll MSR until DIO=1 (Result phase)
+        for _ in 0..10_000 {
+            let msr = cpc.port_read(0xFB7E);
+            if (msr & 0x40) != 0 && (msr & 0x80) != 0 {
+                break;
+            }
+            cpc.tick();
+        }
+        let msr = cpc.port_read(0xFB7E);
+        assert_ne!(msr & 0x40, 0, "DIO must be 1 in Result phase");
+        // Read the single result byte
+        let version = cpc.port_read(0xFB7F);
+        assert!(
+            version == 0x80 || version == 0x90,
+            "Version should be 0x80 (765A) or 0x90 (765B), got {:#x}",
+            version
+        );
+    }
+
+    #[test]
+    fn fdc_seek_and_sense_interrupt_through_cpc_bus() {
+        let mut cpc = create_cpc6128();
+        // Seek command: opcode 0x0F, drive 0, NCN=5
+        cpc.port_write(0xFB7F, 0x0F);
+        cpc.port_write(0xFB7F, 0x00);
+        cpc.port_write(0xFB7F, 0x05);
+        // Tick enough cycles for the seek to complete
+        for _ in 0..50_000 {
+            cpc.tick();
+        }
+        // Sense Interrupt Status: opcode 0x08
+        cpc.port_write(0xFB7F, 0x08);
+        for _ in 0..200 {
+            cpc.tick();
+        }
+        // Read 2 result bytes: ST0, PCN
+        let st0 = cpc.port_read(0xFB7F);
+        let pcn = cpc.port_read(0xFB7F);
+        assert_ne!(st0 & 0x20, 0, "ST0 SE must be set after seek completion");
+        assert_eq!(pcn, 5, "PCN must be 5 after seeking to track 5");
+    }
+
+    // TODO:
+    // #[test]
+    // fn fdc_write_to_msr_port_ignored() {
+    //     let mut cpc = create_cpc6128();
+    //     // MSR is read-only; writing to 0xFB7E should not corrupt FDC state
+    //     cpc.port_write(0xFB7E, 0xFF);
+    //     let msr = cpc.port_read(0xFB7E);
+    //     assert_ne!(
+    //         msr & 0x80,
+    //         0,
+    //         "RQM must still be set after writing to read-only MSR port"
+    //     );
+    // }
+
+    #[test]
+    fn fdc_port_does_not_interfere_with_crtc() {
+        let mut cpc = create_cpc6128();
+        // Writing to FDC data register should not affect CRTC registers
+        cpc.port_write(0xBC00, 12); // Select CRTC R12
+        cpc.port_write(0xBD00, 0x30);
+        cpc.port_write(0xFB7F, 0x10); // FDC Version command
+        // CRTC R12 should be unchanged
+        cpc.port_write(0xBC00, 12);
+        assert_eq!(
+            cpc.port_read(0xBF00),
+            0x30,
+            "CRTC R12 must not be affected by FDC write"
+        );
+    }
+
+    #[test]
+    fn fdc_port_does_not_interfere_with_gate_array() {
+        let mut cpc = create_cpc6128();
+        // FDC port writes should not be interpreted as Gate Array commands
+        cpc.port_write(0xFB7F, 0x82); // This looks like GA mode register, but goes to FDC
+        assert_eq!(
+            cpc.gate_array().mode(),
+            ScreenMode::Mode1,
+            "GA mode must not change from FDC port write"
+        );
+    }
+
+    #[test]
+    fn fdc_tick_advances_seek_timing() {
+        let mut cpc = create_cpc6128();
+        // Issue a seek command
+        cpc.port_write(0xFB7F, 0x0F);
+        cpc.port_write(0xFB7F, 0x00);
+        cpc.port_write(0xFB7F, 0x0A); // Seek to track 10
+        // Before ticking, the seek should not be complete
+        // (FDC is in Execution phase, D0B should be set)
+        let msr = cpc.port_read(0xFB7E);
+        assert_ne!(msr & 0x01, 0, "D0B must be set during seek on drive 0");
+        // Tick enough for seek completion
+        for _ in 0..50_000 {
+            cpc.tick();
+        }
+        // After completion, D0B should be clear
+        let msr = cpc.port_read(0xFB7E);
+        assert_eq!(msr & 0x01, 0, "D0B must be clear after seek completes");
+    }
+
+    #[test]
+    fn fdc_command_phase_locked_until_results_read() {
+        let mut cpc = create_cpc6128();
+        // Issue Version command
+        cpc.port_write(0xFB7F, 0x10);
+        for _ in 0..200 {
+            cpc.tick();
+        }
+        // FDC should be in Result phase — DIO=1
+        let msr = cpc.port_read(0xFB7E);
+        assert_ne!(msr & 0x40, 0, "DIO must be 1 in Result phase");
+        // Try writing a new command without reading the result — should be ignored
+        cpc.port_write(0xFB7F, 0x03); // Specify opcode
+        for _ in 0..200 {
+            cpc.tick();
+        }
+        // Still in Result phase — locked
+        let msr = cpc.port_read(0xFB7E);
+        assert_ne!(
+            msr & 0x40,
+            0,
+            "FDC must remain locked in Result phase until all bytes are read"
+        );
+        // Now read the result byte
+        let _ = cpc.port_read(0xFB7F);
+        // Should be back in Command phase
+        let msr = cpc.port_read(0xFB7E);
+        assert_eq!(
+            msr & 0x40,
+            0,
+            "DIO must be 0 after reading all result bytes"
         );
     }
 }

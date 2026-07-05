@@ -235,7 +235,7 @@ impl Disk {
         self.track_count
     }
 
-    fn side_count(&self) -> u8 {
+    pub fn side_count(&self) -> u8 {
         self.side_count
     }
 

@@ -182,7 +182,7 @@ impl Command {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Drive {
+pub enum Drive {
     Drive0,
     Drive1,
     Drive2,
@@ -211,7 +211,7 @@ impl Drive {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Variant {
+pub enum Variant {
     Upd765A,
     Upd765B,
 }
@@ -223,7 +223,7 @@ enum Phase {
     Result,
 }
 
-struct Controller {
+pub struct Controller {
     variant: Variant,
     phase: Phase,
     motor_state: bool,
@@ -663,19 +663,19 @@ impl Controller {
         self.pcn[drive.index()]
     }
 
-    fn set_drive_ready(&mut self, drive: Drive, ready: bool) {
+    pub fn set_drive_ready(&mut self, drive: Drive, ready: bool) {
         self.drive_ready[drive.index()] = ready;
     }
 
-    fn set_drive_at_track0(&mut self, drive: Drive, state: bool) {
+    pub fn set_drive_at_track0(&mut self, drive: Drive, state: bool) {
         self.drive_at_track0[drive.index()] = state
     }
 
-    fn set_drive_write_protected(&mut self, drive: Drive, state: bool) {
+    pub fn set_drive_write_protected(&mut self, drive: Drive, state: bool) {
         self.drive_write_protected[drive.index()] = state;
     }
 
-    fn set_drive_two_sided(&mut self, drive: Drive, state: bool) {
+    pub fn set_drive_two_sided(&mut self, drive: Drive, state: bool) {
         self.drive_two_sided[drive.index()] = state;
     }
 

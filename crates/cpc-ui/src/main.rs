@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cpc::{Cpc, CpcKey, TapePlayer, WINDOW_HEIGHT, WINDOW_WIDTH};
+use cpc::{Cpc, CpcKey, Disk, Drive, TapePlayer, WINDOW_HEIGHT, WINDOW_WIDTH};
 use z80::Z80;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +66,7 @@ struct SharedState {
 
 // Commands sent from UI -> Emulator Thread
 enum EmuCommand {
+    LoadDisk(PathBuf),
     LoadTape(PathBuf),
     ToggleTape,
     ReloadTape,
@@ -90,6 +91,8 @@ struct EmulatorApp {
 #[derive(Debug, Clone)]
 enum Message {
     Tick,
+    LoadDiskPressed,
+    DiskLoaded(Option<PathBuf>),
     LoadTapePressed,
     TapeLoaded(Option<PathBuf>),
     ToggleTapePressed,
@@ -138,6 +141,21 @@ impl EmulatorApp {
             Message::ModelSelected(cpc_model) => {
                 self.selected_model = cpc_model.clone();
                 let _ = self.command_tx.send(EmuCommand::SetModel(cpc_model));
+            }
+            Message::LoadDiskPressed => {
+                return Command::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter("DSK Files", &["dsk"])
+                            .pick_file()
+                            .await
+                            .map(|handle| handle.path().to_path_buf())
+                    },
+                    Message::DiskLoaded,
+                );
+            }
+            Message::DiskLoaded(Some(path)) => {
+                let _ = self.command_tx.send(EmuCommand::LoadDisk(path));
             }
             Message::LoadTapePressed => {
                 return Command::perform(
@@ -215,6 +233,10 @@ impl EmulatorApp {
         // Left Sidebar Control Panel
         let sidebar = column![
             text(format!("Amstrad {}", self.selected_model)).size(24),
+            Space::new().height(Length::Fixed(20.0)),
+            button(text("Insert DSK"))
+                .width(Length::Fill)
+                .on_press(Message::LoadDiskPressed),
             Space::new().height(Length::Fixed(20.0)),
             button(text("Load CDT File..."))
                 .width(Length::Fill)
@@ -301,6 +323,7 @@ fn run_emulator_thread(
     let mut bus = Cpc::new_6128(ROM_BYTES_6128_MODEL);
     let mut cpu = Z80::new();
 
+    let mut disk_bytes: Vec<u8> = Vec::new();
     let mut tape_bytes: Vec<u8> = Vec::new();
     let mut unlimited_fps = false;
     let mut frame_count = 0;
@@ -312,6 +335,24 @@ fn run_emulator_thread(
         // Handle UI Commands
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
+                EmuCommand::LoadDisk(path) => {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        disk_bytes = bytes;
+                        match Disk::from_bytes(&disk_bytes) {
+                            Ok(disk) => {
+                                if let Some(mut fdc) = bus.fdc_mut() {
+                                    let two_sided = disk.side_count() == 2;
+                                    fdc.insert_disk(Drive::Drive0, disk);
+                                    fdc.set_drive_ready(Drive::Drive0, true);
+                                    fdc.set_drive_at_track0(Drive::Drive0, true);
+                                    fdc.set_drive_two_sided(Drive::Drive0, two_sided);
+                                    fdc.set_drive_write_protected(Drive::Drive0, false);
+                                }
+                            }
+                            Err(err) => println!("Error reading disk: {:?}", err),
+                        }
+                    }
+                }
                 EmuCommand::LoadTape(path) => {
                     if let Ok(bytes) = std::fs::read(&path) {
                         tape_bytes = bytes;
