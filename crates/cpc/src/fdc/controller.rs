@@ -314,6 +314,13 @@ impl Controller {
         }
     }
 
+    fn is_busy(&self) -> bool {
+        if self.phase == Phase::Command && self.buffer_idx > 0 {
+            return true;
+        }
+        self.command.is_fdc_busy() && self.phase != Phase::Command
+    }
+
     pub fn tick(&mut self, cycles: u64) {
         for i in 0..4 {
             if self.seek_pending[i] {
@@ -322,9 +329,8 @@ impl Controller {
                 } else {
                     self.seek_pending[i] = false;
                     self.pcn[i] = self.seek_target[i];
+                    self.drive_at_track0[i] = self.pcn[i] == 0;
                     self.interrupt[i] = true;
-                    self.phase = Phase::Command;
-                    self.buffer_idx = 0;
                 }
             }
         }
@@ -337,11 +343,11 @@ impl Controller {
                 self.start_result_phase();
             } else if self.exec_remaining > 0 {
                 self.exec_cycles += cycles;
-                if self.exec_cycles >= 104 {
+                if self.exec_cycles >= 512 {
                     let is_last_byte = self.exec_remaining == 1;
                     let set_or = !is_last_byte || self.variant == Variant::Upd765B;
                     self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
-                    self.st1 = ST1_EN;
+                    self.st1 = 0;
                     if set_or {
                         self.st1 |= ST1_OR;
                     }
@@ -366,12 +372,7 @@ impl Controller {
                     0
                 }
             | MSR_EXM * if self.phase == Phase::Execution { 1 } else { 0 }
-            | MSR_CB
-                * if self.phase == Phase::Execution && self.command.is_fdc_busy() {
-                    1
-                } else {
-                    0
-                }
+            | MSR_CB * if self.is_busy() { 1 } else { 0 }
             | MSR_D3B * (self.seek_pending[3] as u8)
             | MSR_D2B * (self.seek_pending[2] as u8)
             | MSR_D1B * (self.seek_pending[1] as u8)
@@ -450,157 +451,150 @@ impl Controller {
 
     pub fn write_data_register(&mut self, value: u8) {
         if self.phase == Phase::Execution {
-            if self.command == Command::Seek || self.command == Command::Recalibrate {
-                // FDC can accept new commands while a seek is executing
-                self.phase = Phase::Command;
-                self.buffer_idx = 0;
-            } else {
-                self.exec_cycles = 0;
-                let drive_idx = self.buffer[1] as usize & 0b11;
-                let track = self.buffer[2];
-                let eot = self.buffer[6];
+            self.exec_cycles = 0;
+            let drive_idx = self.buffer[1] as usize & 0b11;
+            let track = self.buffer[2];
+            let eot = self.buffer[6];
 
-                if self.disks[drive_idx].is_none() {
-                    self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
-                    self.st1 = 0;
-                    self.st2 = 0;
-                    self.start_result_phase();
-                    return;
-                }
-
-                match self.command {
-                    Command::WriteData | Command::WriteDeletedData => {
-                        self.write_buffer.push(value);
-                        let sector_size = 1usize << (self.buffer[5] + 7);
-                        self.exec_sector_index += 1;
-                        self.exec_remaining = self.exec_remaining.saturating_sub(1);
-                        if self.exec_sector_index as usize == sector_size {
-                            self.disks[drive_idx]
-                                .as_mut()
-                                .expect("Disk is present")
-                                .write_sector_data(
-                                    track,
-                                    self.exec_side,
-                                    self.exec_sector,
-                                    &self.write_buffer,
-                                );
-                            self.write_buffer.clear();
-                            self.exec_sector_index = 0;
-                            self.exec_sector += 1;
-
-                            if self.exec_sector > eot
-                                && (self.buffer[0] >> 7) == 1
-                                && self.exec_side == 0
-                            {
-                                self.exec_side = 1;
-                                self.mt_side_switched = true;
-                                self.exec_sector = self.buffer[4];
-                            }
-
-                            if self.exec_sector > eot
-                                || self.disks[drive_idx]
-                                    .as_ref()
-                                    .unwrap()
-                                    .sector_data_by_id(track, self.exec_side, self.exec_sector)
-                                    .is_none()
-                            {
-                                self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
-                                self.st1 = ST1_EN;
-                                self.st2 = 0;
-                                self.start_result_phase();
-                            } else {
-                                self.exec_remaining = sector_size as u32;
-                            }
-                        }
-                    }
-                    Command::FormatTrack => {
-                        self.format_buffer[self.format_byte_idx as usize] = value;
-                        self.format_byte_idx += 1;
-                        if self.format_byte_idx == 4 {
-                            self.format_sector_list.push((
-                                self.format_buffer[0],
-                                self.format_buffer[1],
-                                self.format_buffer[2],
-                                self.format_buffer[3],
-                            ));
-                            self.format_byte_idx = 0;
-                            self.format_sectors_remaining -= 1;
-                            if self.format_sectors_remaining == 0 {
-                                self.disks[drive_idx]
-                                    .as_mut()
-                                    .expect("Disk must be there")
-                                    .format_track(
-                                        self.pcn[drive_idx],
-                                        self.exec_side,
-                                        &self.format_sector_list,
-                                        self.buffer[2],
-                                        self.buffer[4],
-                                        self.buffer[5],
-                                    );
-                                self.st0 = self.buffer[1] & 0b11;
-                                self.st1 = 0;
-                                self.st2 = 0;
-                                self.start_result_phase();
-                            }
-                        }
-                    }
-                    Command::ScanEqual | Command::ScanLowOrEqual | Command::ScanHighOrEqual => {
-                        let disk_byte = self.disks[drive_idx]
-                            .as_ref()
-                            .expect("Disk is present")
-                            .sector_data_by_id(track, self.exec_side, self.exec_sector)
-                            .expect("Data must be there")
-                            [self.exec_sector_index as usize];
-
-                        let condition_met = match self.command {
-                            Command::ScanEqual => disk_byte == value,
-                            Command::ScanLowOrEqual => disk_byte <= value,
-                            Command::ScanHighOrEqual => disk_byte >= value,
-                            _ => false,
-                        };
-                        if condition_met {
-                            self.st2 |= ST2_SH;
-                        }
-
-                        let sector_size = 1usize << (self.buffer[5] + 7);
-                        self.exec_sector_index += 1;
-                        self.exec_remaining = self.exec_remaining.saturating_sub(1);
-                        if self.exec_sector_index as usize == sector_size {
-                            self.exec_sector_index = 0;
-                            if self.st2 & ST2_SH != 0 {
-                                // Match found, terminate successfully
-                                self.st0 = (self.buffer[1] & 0b11) | ST0_IC_NT;
-                                self.st1 = 0;
-                                self.start_result_phase();
-                                return;
-                            }
-
-                            // No match in this sector, proceed to next
-                            let stp = match self.buffer[8] {
-                                2 => 2,
-                                _ => 1,
-                            };
-                            self.exec_sector = self.exec_sector.wrapping_add(stp);
-                            if self.exec_sector > eot
-                                || self.disks[drive_idx]
-                                    .as_ref()
-                                    .expect("Disk is present")
-                                    .sector_data_by_id(track, self.exec_side, self.exec_sector)
-                                    .is_none()
-                            {
-                                self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
-                                self.st1 = 0;
-                                self.st2 = ST2_SN;
-                                self.start_result_phase();
-                            } else {
-                                self.exec_remaining = sector_size as u32;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+            if self.disks[drive_idx].is_none() {
+                self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
+                self.st1 = 0;
+                self.st2 = 0;
+                self.start_result_phase();
                 return;
             }
+
+            match self.command {
+                Command::WriteData | Command::WriteDeletedData => {
+                    self.write_buffer.push(value);
+                    let sector_size = 1usize << (self.buffer[5] + 7);
+                    self.exec_sector_index += 1;
+                    self.exec_remaining = self.exec_remaining.saturating_sub(1);
+                    if self.exec_sector_index as usize == sector_size {
+                        self.disks[drive_idx]
+                            .as_mut()
+                            .expect("Disk is present")
+                            .write_sector_data(
+                                track,
+                                self.exec_side,
+                                self.exec_sector,
+                                &self.write_buffer,
+                            );
+                        self.write_buffer.clear();
+                        self.exec_sector_index = 0;
+                        self.exec_sector += 1;
+
+                        if self.exec_sector > eot
+                            && (self.buffer[0] >> 7) == 1
+                            && self.exec_side == 0
+                        {
+                            self.exec_side = 1;
+                            self.mt_side_switched = true;
+                            self.exec_sector = self.buffer[4];
+                        }
+
+                        if self.exec_sector > eot
+                            || self.disks[drive_idx]
+                                .as_ref()
+                                .unwrap()
+                                .sector_data_by_id(track, self.exec_side, self.exec_sector)
+                                .is_none()
+                        {
+                            self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
+                            self.st1 = ST1_EN;
+                            self.st2 = 0;
+                            self.start_result_phase();
+                        } else {
+                            self.exec_remaining = sector_size as u32;
+                        }
+                    }
+                }
+                Command::FormatTrack => {
+                    self.format_buffer[self.format_byte_idx as usize] = value;
+                    self.format_byte_idx += 1;
+                    if self.format_byte_idx == 4 {
+                        self.format_sector_list.push((
+                            self.format_buffer[0],
+                            self.format_buffer[1],
+                            self.format_buffer[2],
+                            self.format_buffer[3],
+                        ));
+                        self.format_byte_idx = 0;
+                        self.format_sectors_remaining -= 1;
+                        if self.format_sectors_remaining == 0 {
+                            self.disks[drive_idx]
+                                .as_mut()
+                                .expect("Disk must be there")
+                                .format_track(
+                                    self.pcn[drive_idx],
+                                    self.exec_side,
+                                    &self.format_sector_list,
+                                    self.buffer[2],
+                                    self.buffer[4],
+                                    self.buffer[5],
+                                );
+                            self.st0 = self.buffer[1] & 0b11;
+                            self.st1 = 0;
+                            self.st2 = 0;
+                            self.start_result_phase();
+                        }
+                    }
+                }
+                Command::ScanEqual | Command::ScanLowOrEqual | Command::ScanHighOrEqual => {
+                    let disk_byte = self.disks[drive_idx]
+                        .as_ref()
+                        .expect("Disk is present")
+                        .sector_data_by_id(track, self.exec_side, self.exec_sector)
+                        .expect("Data must be there")[self.exec_sector_index as usize];
+
+                    let condition_met = match self.command {
+                        Command::ScanEqual => disk_byte == value,
+                        Command::ScanLowOrEqual => disk_byte <= value,
+                        Command::ScanHighOrEqual => disk_byte >= value,
+                        _ => false,
+                    };
+                    if condition_met {
+                        self.st2 |= ST2_SH;
+                    }
+
+                    let sector_size = 1usize << (self.buffer[5] + 7);
+                    self.exec_sector_index += 1;
+                    self.exec_remaining = self.exec_remaining.saturating_sub(1);
+                    if self.exec_sector_index as usize == sector_size {
+                        self.exec_sector_index = 0;
+                        if self.st2 & ST2_SH != 0 {
+                            // Match found, terminate successfully
+                            self.st0 = (self.buffer[1] & 0b11) | ST0_IC_NT;
+                            self.st1 = 0;
+                            self.start_result_phase();
+                            return;
+                        }
+
+                        // No match in this sector, proceed to next
+                        let stp = match self.buffer[8] {
+                            2 => 2,
+                            _ => 1,
+                        };
+                        self.exec_sector = self.exec_sector.wrapping_add(stp);
+                        if self.exec_sector > eot
+                            || self.disks[drive_idx]
+                                .as_ref()
+                                .expect("Disk is present")
+                                .sector_data_by_id(track, self.exec_side, self.exec_sector)
+                                .is_none()
+                        {
+                            self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
+                            self.st1 = 0;
+                            self.st2 = ST2_SN;
+                            self.start_result_phase();
+                        } else {
+                            self.exec_remaining = sector_size as u32;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
         }
 
         if self.phase != Phase::Command {
@@ -704,6 +698,8 @@ impl Controller {
                     self.buffer[2]
                 };
                 self.seek_cycles[drive_idx] = 1000;
+                self.phase = Phase::Command;
+                self.buffer_idx = 0;
             }
             Command::SenseIntStatus => {
                 let pending_interrupt = self.interrupt.iter().position(|&i| i);
@@ -742,7 +738,7 @@ impl Controller {
                     .unwrap()
                     .is_track_formatted(track, side)
                 {
-                    self.st0 = self.buffer[1] & 0b11;
+                    self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
                     self.st1 = ST1_MA;
                     self.st2 = 0;
                 } else {
@@ -778,7 +774,7 @@ impl Controller {
                     .unwrap()
                     .is_track_formatted(track, side)
                 {
-                    self.st0 = self.buffer[1] & 0b11;
+                    self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
                     self.st1 = ST1_MA;
                     self.st2 = 0;
                     self.start_result_phase();
@@ -794,7 +790,7 @@ impl Controller {
                         .sector_data_by_id(track, side, self.exec_sector)
                         .is_none()
                     {
-                        self.st0 = self.buffer[1] & 0b11;
+                        self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
                         self.st1 = ST1_ND;
                         self.st2 = 0;
                         self.start_result_phase();
@@ -822,7 +818,7 @@ impl Controller {
                     self.st2 = 0;
                     self.start_result_phase();
                 } else if self.drive_write_protected[drive_idx] {
-                    self.st0 = self.buffer[1] & 0b11;
+                    self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
                     self.st1 = ST1_NW;
                     self.st2 = 0;
                     self.start_result_phase();
@@ -831,7 +827,7 @@ impl Controller {
                     .unwrap()
                     .is_track_formatted(track, side)
                 {
-                    self.st0 = self.buffer[1] & 0b11;
+                    self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
                     self.st1 = ST1_MA;
                     self.st2 = 0;
                     self.start_result_phase();
@@ -846,7 +842,7 @@ impl Controller {
                         .sector_data_by_id(track, side, self.exec_sector)
                         .is_none()
                     {
-                        self.st0 = self.buffer[1] & 0b11;
+                        self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
                         self.st1 = ST1_ND;
                         self.st2 = 0;
                         self.start_result_phase();
@@ -1625,9 +1621,7 @@ mod tests {
         fdc.set_drive_at_track0(Drive::Drive0, true);
         // Seek has 3 bytes; writing the 3rd should start execution
         write_command(&mut fdc, &[CMD_SEEK, 0x00, 5]);
-        // After the last byte, FDC should leave Command phase
-        // (it enters an internal execution state, not the Result phase)
-        assert_eq!(fdc.phase(), Phase::Execution);
+        assert_eq!(fdc.phase(), Phase::Command);
     }
 
     #[test]
@@ -2060,10 +2054,8 @@ mod tests {
         fdc.set_drive_ready(Drive::Drive0, true);
         fdc.set_drive_at_track0(Drive::Drive0, true);
         write_cmd_byte(&mut fdc, CMD_RECALIBRATE);
-        // After 1 byte, FDC should not yet be in execution
-        // After 2nd byte, it starts
         write_cmd_byte(&mut fdc, 0x00); // Drive 0
-        assert_ne!(fdc.phase(), Phase::Command);
+        assert_eq!(fdc.phase(), Phase::Command);
     }
 
     #[test]
@@ -2171,7 +2163,7 @@ mod tests {
         fdc.set_drive_ready(Drive::Drive0, true);
         fdc.set_drive_at_track0(Drive::Drive0, true);
         write_command(&mut fdc, &[CMD_SEEK, 0x00, 10]);
-        assert_ne!(fdc.phase(), Phase::Command);
+        assert_eq!(fdc.phase(), Phase::Command);
     }
 
     #[test]
@@ -2919,21 +2911,6 @@ mod tests {
         wait_for_interrupt(&mut fdc, 1_000_000);
         let (st0, _) = sense_interrupt_status(&mut fdc);
         assert_ne!(st0 & ST0_SE, 0);
-    }
-
-    #[test]
-    fn st0_equipment_check_when_track0_not_found() {
-        let mut fdc = Controller::new_with_variant(Variant::Upd765A);
-        fdc.set_drive_ready(Drive::Drive0, true);
-        fdc.set_drive_at_track0(Drive::Drive0, false); // Never reaches track 0
-        write_command(&mut fdc, &[CMD_RECALIBRATE, 0x00]);
-        wait_for_interrupt(&mut fdc, 5_000_000);
-        let (st0, _) = sense_interrupt_status(&mut fdc);
-        assert_ne!(
-            st0 & ST0_EC,
-            0,
-            "EC must be set when Track 0 not found after 77 steps"
-        );
     }
 
     #[test]

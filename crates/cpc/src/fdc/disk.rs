@@ -1,5 +1,5 @@
-const STANDARD_HEADER: &[u8] = b"MV - CPCEMU Disk-File\r\nDisk-Info\r\n";
-const EXTENDED_HEADER: &[u8] = b"EXTENDED CPC DSK File\r\nDisk-Info\r\n";
+const STANDARD_HEADER: &[u8] = b"MV - CPCEMU";
+const EXTENDED_HEADER: &[u8] = b"EXTENDED CPC DSK File";
 const TRACK_HEADER: &[u8] = b"Track-Info\r\n";
 
 const CREATOR: usize = 0x22;
@@ -404,7 +404,7 @@ mod tests {
 
     fn make_dib_standard(creator: &[u8], tracks: u8, sides: u8, track_size: u16) -> Vec<u8> {
         let mut dib = vec![0u8; 256];
-        dib[0..34].copy_from_slice(STANDARD_HEADER);
+        dib[0..11].copy_from_slice(STANDARD_HEADER);
         let len = creator.len().min(14);
         dib[CREATOR..CREATOR + len].copy_from_slice(&creator[..len]);
         dib[TRACKS] = tracks;
@@ -415,7 +415,7 @@ mod tests {
 
     fn make_dib_extended(creator: &[u8], tracks: u8, sides: u8, track_msbs: &[u8]) -> Vec<u8> {
         let mut dib = vec![0u8; 256];
-        dib[0..34].copy_from_slice(EXTENDED_HEADER);
+        dib[0..21].copy_from_slice(EXTENDED_HEADER);
         let len = creator.len().min(14);
         dib[CREATOR..CREATOR + len].copy_from_slice(&creator[..len]);
         dib[TRACKS] = tracks;
@@ -558,21 +558,6 @@ mod tests {
     fn truncated_dib_rejected() {
         let data = vec![0u8; 100];
         assert_eq!(Disk::from_bytes(&data), Err(DiskError::Truncated));
-    }
-
-    #[test]
-    fn standard_header_exact_34_bytes_checked() {
-        let mut data = make_dib_standard(b"X", 1, 1, 0x1300);
-        // Corrupt byte 33 (last byte of tag)
-        data[33] = b'X';
-        assert_eq!(Disk::from_bytes(&data), Err(DiskError::InvalidHeader));
-    }
-
-    #[test]
-    fn extended_header_exact_34_bytes_checked() {
-        let mut data = make_dib_extended(b"X", 1, 1, &[3]);
-        data[33] = b'X';
-        assert_eq!(Disk::from_bytes(&data), Err(DiskError::InvalidHeader));
     }
 
     #[test]
