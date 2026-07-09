@@ -263,6 +263,17 @@ impl Disk {
             .map(|sector| sector.data.as_slice())
     }
 
+    pub fn sector_info_by_id(
+        &self,
+        track: u8,
+        side: u8,
+        sector_id: u8,
+    ) -> Option<(u8, u8, u8, u8)> {
+        self.track(track, side)
+            .and_then(|t| t.sectors.iter().find(|s| s.id == sector_id))
+            .map(|s| (s.track, s.side, s.id, s.size))
+    }
+
     pub fn first_sector_info(&self, track: u8, side: u8) -> Option<(u8, u8, u8, u8)> {
         self.track(track, side)
             .and_then(|t| t.sectors.first())

@@ -1,4 +1,4 @@
-use crate::fdc::{Disk, controller::Command::WriteData};
+use crate::fdc::Disk;
 
 const MSR_RQM: u8 = 0x80;
 const MSR_DIO: u8 = 0x40;
@@ -315,10 +315,7 @@ impl Controller {
     }
 
     fn is_busy(&self) -> bool {
-        if self.phase == Phase::Command && self.buffer_idx > 0 {
-            return true;
-        }
-        self.command.is_fdc_busy() && self.phase != Phase::Command
+        self.phase != Phase::Command || self.buffer_idx > 0
     }
 
     pub fn tick(&mut self, cycles: u64) {
@@ -391,7 +388,7 @@ impl Controller {
         }
         if self.phase == Phase::Execution && self.command.is_executing_read() {
             let drive_idx = self.buffer[1] as usize & 0b11;
-            let track = self.buffer[2];
+            let track = self.pcn[drive_idx];
             let sector_size = 1usize << (self.buffer[5] + 7);
             let eot = self.buffer[6];
             let disk = self.disks[drive_idx]
@@ -429,10 +426,17 @@ impl Controller {
                         return byte;
                     }
                 }
-                if disk
-                    .sector_data_by_id(track, self.exec_side, self.exec_sector)
-                    .is_none()
+                if let Some((c, h, _, _)) =
+                    disk.sector_info_by_id(track, self.exec_side, self.exec_sector)
                 {
+                    if c != self.buffer[2] || h != self.exec_side {
+                        self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
+                        self.st1 = ST1_ND;
+                        self.st2 = 0;
+                        self.start_result_phase();
+                        return byte;
+                    }
+                } else {
                     self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
                     self.st1 = ST1_EN;
                     self.st2 = 0;
@@ -453,7 +457,7 @@ impl Controller {
         if self.phase == Phase::Execution {
             self.exec_cycles = 0;
             let drive_idx = self.buffer[1] as usize & 0b11;
-            let track = self.buffer[2];
+            let track = self.pcn[drive_idx];
             let eot = self.buffer[6];
 
             if self.disks[drive_idx].is_none() {
@@ -634,7 +638,6 @@ impl Controller {
         self.interrupt.fill(false);
         self.seek_pending.fill(false);
         self.seek_cycles.fill(0);
-        // TODO: consider changing motor state
     }
 
     fn variant(&self) -> Variant {
@@ -677,6 +680,7 @@ impl Controller {
         self.phase = Phase::Execution;
         let drive_idx = self.buffer[1] as usize & 0b11;
         let side = (self.buffer[1] >> 2) & 0b1;
+
         match self.command {
             Command::Version => {
                 self.start_result_phase();
@@ -760,7 +764,7 @@ impl Controller {
                 self.format_sector_list.clear();
                 self.format_byte_idx = 0;
 
-                let track = self.buffer[2];
+                let track = self.pcn[drive_idx];
                 if !self.motor_state
                     || !self.drive_ready[drive_idx]
                     || self.disks[drive_idx].is_none()
@@ -784,12 +788,18 @@ impl Controller {
                     self.exec_remaining = 1u32 << (self.buffer[5] + 7);
                     self.exec_cycles = 0;
                     self.weak_counter = self.weak_counter.wrapping_add(1);
-                    if self.disks[drive_idx]
+                    if let Some((c, h, _, _)) = self.disks[drive_idx]
                         .as_ref()
                         .unwrap()
-                        .sector_data_by_id(track, side, self.exec_sector)
-                        .is_none()
+                        .sector_info_by_id(track, side, self.exec_sector)
                     {
+                        if c != self.buffer[2] || h != self.exec_side {
+                            self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
+                            self.st1 = ST1_ND;
+                            self.st2 = 0;
+                            self.start_result_phase();
+                        }
+                    } else {
                         self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
                         self.st1 = ST1_ND;
                         self.st2 = 0;
@@ -808,7 +818,7 @@ impl Controller {
                 self.format_sector_list.clear();
                 self.format_byte_idx = 0;
 
-                let track = self.buffer[2];
+                let track = self.pcn[drive_idx];
                 if !self.motor_state
                     || !self.drive_ready[drive_idx]
                     || self.disks[drive_idx].is_none()
@@ -836,12 +846,18 @@ impl Controller {
                     self.exec_sector_index = 0;
                     self.exec_remaining = 1u32 << (self.buffer[5] + 7);
                     self.exec_cycles = 0;
-                    if self.disks[drive_idx]
+                    if let Some((c, h, _, _)) = self.disks[drive_idx]
                         .as_ref()
                         .unwrap()
-                        .sector_data_by_id(track, side, self.exec_sector)
-                        .is_none()
+                        .sector_info_by_id(track, side, self.exec_sector)
                     {
+                        if c != self.buffer[2] || h != self.exec_side {
+                            self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
+                            self.st1 = ST1_ND;
+                            self.st2 = 0;
+                            self.start_result_phase();
+                        }
+                    } else {
                         self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
                         self.st1 = ST1_ND;
                         self.st2 = 0;
@@ -3756,6 +3772,12 @@ mod tests {
         // Row: MT=0 HD=0 final=EOT -> C+1, R=0.
         let mut fdc = Controller::new_with_variant(Variant::Upd765A);
         setup_drive_a(&mut fdc);
+
+        // Seek to track 5 first so that logical and physical track match
+        write_command(&mut fdc, &[CMD_SEEK, 0x00, 5]);
+        wait_for_interrupt(&mut fdc, 1_000_000);
+        let _ = sense_interrupt_status(&mut fdc);
+
         write_command(
             &mut fdc,
             &[CMD_READ_DATA, 0x00, 5, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF],
