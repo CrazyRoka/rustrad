@@ -36,6 +36,7 @@ The controller executes the requested read, write, or drive movement.
   * For **Read** operations, wait for `RQM = 1` and `DIO = 1`, then read data from `&FB7F`.
   * For **Write** operations, wait for `RQM = 1` and `DIO = 0`, then write data to `&FB7F`.
   * **Timing Constraint:** To avoid overruns, transfers must occur within **26 μs (MFM mode)** or **54 μs (FM mode)**. The CPC FDC is clocked at 4 MHz, doubling the datasheet's 8 MHz service windows of 13 μs / 27 μs. If missed, the `OR` (Overrun) bit in `ST1` is set, and the execution phase terminates immediately.
+  * **Emulator Implementation Note:** The execution cycles elapsed before registering a timed overrun must be scaled sufficiently high (e.g., set to at least 20,000 cycles, equivalent to ~5ms). Setting this limit too low causes premature overrun termination, which breaks custom loading sequences and copy-protection checks in picky software titles such as ***Orion Prime***.
 
 #### 3. Result Phase
 After completion or termination, status bytes are placed in the internal FIFO stack for reading.

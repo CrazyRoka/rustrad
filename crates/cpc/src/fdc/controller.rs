@@ -265,6 +265,7 @@ pub struct Controller {
     write_buffer: Vec<u8>,
     format_buffer: [u8; 4],
     format_sector_list: Vec<(u8, u8, u8, u8)>,
+    read_id_idx: [usize; 4],
 }
 
 impl Controller {
@@ -311,6 +312,7 @@ impl Controller {
             write_buffer: Vec::new(),
             format_buffer: [0; 4],
             format_sector_list: Vec::new(),
+            read_id_idx: [0; 4],
         }
     }
 
@@ -340,7 +342,7 @@ impl Controller {
                 self.start_result_phase();
             } else if self.exec_remaining > 0 {
                 self.exec_cycles += cycles;
-                if self.exec_cycles >= 512 {
+                if self.exec_cycles >= 20000 {
                     let is_last_byte = self.exec_remaining == 1;
                     let set_or = !is_last_byte || self.variant == Variant::Upd765B;
                     self.st0 = (self.buffer[1] & 0b11) | ST0_IC_AT;
@@ -638,6 +640,7 @@ impl Controller {
         self.interrupt.fill(false);
         self.seek_pending.fill(false);
         self.seek_cycles.fill(0);
+        self.read_id_idx.fill(0);
     }
 
     fn variant(&self) -> Variant {
@@ -938,10 +941,12 @@ impl Controller {
                 let drive_idx = self.buffer[1] as usize & 0b11;
                 let side = (self.buffer[1] >> 2) & 0b1;
                 let track = self.pcn[drive_idx];
+                let idx = self.read_id_idx[drive_idx];
                 let (c, h, r, n) = self.disks[drive_idx]
                     .as_ref()
-                    .and_then(|d| d.first_sector_info(track, side))
+                    .and_then(|d| d.sector_info_by_index(track, side, idx))
                     .unwrap_or((0, 0, 0, 0));
+                self.read_id_idx[drive_idx] = self.read_id_idx[drive_idx].wrapping_add(1);
                 self.buffer = [0, 0, self.st0, self.st1, self.st2, c, h, r, n];
                 self.buffer_idx = 2;
             }
@@ -1628,6 +1633,28 @@ mod tests {
         let msr = fdc.read_main_status_register();
         assert_ne!(msr & MSR_RQM, 0);
         assert_eq!(msr & MSR_DIO, 0);
+    }
+
+    #[test]
+    fn overrun_timing_threshold() {
+        let mut fdc = Controller::new_with_variant(Variant::Upd765A);
+        setup_drive_a(&mut fdc);
+        write_command(
+            &mut fdc,
+            &[CMD_READ_DATA, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF],
+        );
+        wait_for_phase(&mut fdc, Phase::Execution, 100_000);
+
+        // Tick 10,000 cycles (greater than the old 512, but below the new 20,000 threshold)
+        fdc.tick(10000);
+
+        // Controller should still remain in the Execution phase without an overrun
+        assert_eq!(fdc.phase(), Phase::Execution);
+
+        // Tick 10,000 cycles
+        fdc.tick(10000);
+
+        assert_eq!(fdc.phase(), Phase::Result);
     }
 
     #[test]
@@ -2709,6 +2736,55 @@ mod tests {
         assert_eq!(result[4], 0, "H should be 0 for side 0");
         assert_eq!(result[5], 0xC1, "R should be 0xC1 (first sector)");
         assert_eq!(result[6], 2, "N should be 2 (512 bytes)");
+    }
+
+    #[test]
+    fn read_id_cycles_through_sectors() {
+        let mut fdc = Controller::new_with_variant(Variant::Upd765A);
+        setup_drive_a(&mut fdc);
+
+        // First Read ID
+        write_command(&mut fdc, &[CMD_READ_ID, 0x00]);
+        wait_for_phase(&mut fdc, Phase::Result, 500_000);
+        let result1 = read_result(&mut fdc, 7);
+        assert_eq!(result1[5], 0xC1, "First Read ID should return first sector");
+
+        // Second Read ID
+        write_command(&mut fdc, &[CMD_READ_ID, 0x00]);
+        wait_for_phase(&mut fdc, Phase::Result, 500_000);
+        let result2 = read_result(&mut fdc, 7);
+        assert_eq!(
+            result2[5], 0xC2,
+            "Second Read ID should return second sector"
+        );
+
+        // Third Read ID
+        write_command(&mut fdc, &[CMD_READ_ID, 0x00]);
+        wait_for_phase(&mut fdc, Phase::Result, 500_000);
+        let result3 = read_result(&mut fdc, 7);
+        assert_eq!(result3[5], 0xC3, "Third Read ID should return third sector");
+    }
+
+    #[test]
+    fn reset_clears_read_id_index() {
+        let mut fdc = Controller::new_with_variant(Variant::Upd765A);
+        setup_drive_a(&mut fdc);
+
+        // First Read ID
+        write_command(&mut fdc, &[CMD_READ_ID, 0x00]);
+        wait_for_phase(&mut fdc, Phase::Result, 500_000);
+        let result1 = read_result(&mut fdc, 7);
+        assert_eq!(result1[5], 0xC1);
+
+        // Reset the controller, which should clear read_id_idx back to 0
+        fdc.reset();
+        setup_drive_a(&mut fdc);
+
+        // Second Read ID after reset
+        write_command(&mut fdc, &[CMD_READ_ID, 0x00]);
+        wait_for_phase(&mut fdc, Phase::Result, 500_000);
+        let result2 = read_result(&mut fdc, 7);
+        assert_eq!(result2[5], 0xC1, "Read ID index should have reset to 0xC1");
     }
 
     #[test]

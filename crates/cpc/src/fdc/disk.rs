@@ -280,6 +280,24 @@ impl Disk {
             .map(|s| (s.track, s.side, s.id, s.size))
     }
 
+    pub fn sector_info_by_index(
+        &self,
+        track: u8,
+        side: u8,
+        index: usize,
+    ) -> Option<(u8, u8, u8, u8)> {
+        self.track(track, side)
+            .and_then(|t| {
+                let len = t.sectors.len();
+                if len == 0 {
+                    None
+                } else {
+                    t.sectors.get(index % len)
+                }
+            })
+            .map(|s| (s.track, s.side, s.id, s.size))
+    }
+
     pub fn is_track_formatted(&self, track: u8, side: u8) -> bool {
         self.track(track, side).is_some()
     }
@@ -1459,6 +1477,25 @@ mod tests {
         let disk = Disk::from_bytes(&data).unwrap();
         let t = disk.track(0, 0).unwrap();
         assert_eq!(t.sectors.len(), t.sector_count as usize);
+    }
+
+    #[test]
+    fn sector_info_by_index_wrapping() {
+        let data = build_standard_dsk(b"C", 1, 1, 2, 3, 0xC1);
+        let disk = Disk::from_bytes(&data).unwrap();
+
+        let s0 = disk.sector_info_by_index(0, 0, 0).unwrap();
+        let s1 = disk.sector_info_by_index(0, 0, 1).unwrap();
+        let s2 = disk.sector_info_by_index(0, 0, 2).unwrap();
+        let s3 = disk.sector_info_by_index(0, 0, 3).unwrap(); // wraps around to 0
+
+        assert_eq!(s0.2, 0xC1);
+        assert_eq!(s1.2, 0xC2);
+        assert_eq!(s2.2, 0xC3);
+        assert_eq!(
+            s3.2, 0xC1,
+            "Index 3 should wrap back to the first sector 0xC1"
+        );
     }
 
     #[test]
